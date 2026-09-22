@@ -1,0 +1,41 @@
+// This is your Prisma schema file — it defines your database tables.
+// Run `npm run db:migrate` to apply changes to your local database.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// A pipeline "run" — created every time GitHub fires a webhook
+model Run {
+  id         String   @id @default(uuid())
+  repoName   String                          // e.g. "my-node-app"
+  repoUrl    String                          // e.g. "https://github.com/you/my-node-app"
+  branch     String                          // e.g. "main"
+  commitSha  String                          // e.g. "d4f9a1b"
+  commitMsg  String                          // commit message
+  status     String   @default("RUNNING")   // RUNNING | SUCCESS | FAILED
+  startedAt  DateTime @default(now())
+  finishedAt DateTime?
+
+  // One run has many log lines
+  logs Log[]
+
+  @@map("runs")
+}
+
+// Each line of output from the Docker container
+model Log {
+  id        Int      @id @default(autoincrement())
+  runId     String
+  line      String   // one line of stdout/stderr
+  createdAt DateTime @default(now())
+
+  run Run @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@map("logs")
+}

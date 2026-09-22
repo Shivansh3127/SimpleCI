@@ -1,0 +1,16 @@
+# .simpleci.yaml
+# Put this file in the ROOT of the repo you want SimpleCI to test.
+# When you push to GitHub, SimpleCI will read this file and run these steps.
+
+pipeline:
+  name: my-node-app
+
+  steps:
+    - name: Install Dependencies
+      run: npm install
+
+    - name: Run Tests
+      run: npm test
+
+    - name: Build
+      run: npm run build
