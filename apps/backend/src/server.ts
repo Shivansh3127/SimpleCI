@@ -5,6 +5,7 @@ import http from 'http';
 import { WebSocketServer } from 'ws';
 import { createWebhookRouter } from './routes/webhook.js';
 import runsRouter from './routes/runs.js';
+import prisma from './db/prisma.js';
 
 const app = express();
 const PORT = process.env.PORT ?? 3000;
@@ -41,10 +42,26 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// ─── Startup: recover stuck runs ──────────────────────────────
+// If the server crashed while a pipeline was running, those runs are stuck
+// in RUNNING status forever. Mark them FAILED on startup so the dashboard
+// doesn't show phantom "Running" runs that will never complete.
+async function recoverStuckRuns() {
+  const stuck = await prisma.run.updateMany({
+    where: { status: 'RUNNING' },
+    data: { status: 'FAILED', finishedAt: new Date() },
+  });
+  if (stuck.count > 0) {
+    console.warn(`[Startup] ⚠️  Recovered ${stuck.count} stuck RUNNING run(s) → FAILED`);
+  }
+}
+
 // ─── Start ────────────────────────────────────────────────────
-server.listen(PORT, () => {
-  console.log(`\n🚀 SimpleCI backend running at http://localhost:${PORT}`);
-  console.log(`   Health:   http://localhost:${PORT}/health`);
-  console.log(`   Runs API: http://localhost:${PORT}/runs`);
-  console.log(`   Webhook:  POST http://localhost:${PORT}/webhook/github\n`);
+recoverStuckRuns().then(() => {
+  server.listen(PORT, () => {
+    console.log(`\n🚀 SimpleCI backend running at http://localhost:${PORT}`);
+    console.log(`   Health:   http://localhost:${PORT}/health`);
+    console.log(`   Runs API: http://localhost:${PORT}/runs`);
+    console.log(`   Webhook:  POST http://localhost:${PORT}/webhook/github\n`);
+  });
 });
