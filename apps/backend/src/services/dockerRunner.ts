@@ -76,9 +76,32 @@ export async function runPipeline(
     await emitLog(`[SimpleCI] Steps: ${steps.map((s) => s.name).join(' → ')}`);
     await emitLog('');
 
+    // ── Auto-pull the image if it doesn't exist locally ──────────────────
+    // On a fresh machine no manual 'docker pull' is needed.
+    // Subsequent runs reuse the locally cached image (fast).
+    const IMAGE = 'node:20-alpine';
+    await emitLog(`[SimpleCI] Checking image: ${IMAGE}`);
+    try {
+      await docker.getImage(IMAGE).inspect(); // throws if image not found
+      await emitLog(`[SimpleCI] Image already cached locally ✓`);
+    } catch {
+      await emitLog(`[SimpleCI] Image not found — pulling ${IMAGE} (this may take a minute)...`);
+      await new Promise<void>((resolve, reject) => {
+        docker.pull(IMAGE, (err: Error | null, stream: NodeJS.ReadableStream) => {
+          if (err) return reject(err);
+          // modem.followProgress streams pull progress; resolve when done
+          docker.modem.followProgress(stream, (pullErr: Error | null) => {
+            if (pullErr) return reject(pullErr);
+            resolve();
+          });
+        });
+      });
+      await emitLog(`[SimpleCI] Image pulled successfully ✓`);
+    }
+
     // Create a Docker container using the official Node.js image
     const container = await docker.createContainer({
-      Image: 'node:20-alpine',        // lightweight Node.js image
+      Image: IMAGE,
       Cmd: ['sh', '-c', fullCommand], // run our shell script
       WorkingDir: '/workspace',       // steps run from the cloned repo root
       AttachStdout: true,
