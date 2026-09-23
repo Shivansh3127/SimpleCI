@@ -5,6 +5,10 @@
 pipeline:
   name: my-node-app
 
+  branches:
+    - main
+    - develop    # only these branches will trigger CI
+    
   steps:
     - name: Install Dependencies
       run: npm install
