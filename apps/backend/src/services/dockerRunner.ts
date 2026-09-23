@@ -45,10 +45,27 @@ export async function runPipeline(
   const stepCommands = steps.map((s) => s.run).join(' && ');
   const fullCommand = `apk add --no-cache git && git clone ${repoUrl} /workspace && cd /workspace && ${stepCommands}`;
 
-  // Helper: save a log line to DB + broadcast over WebSocket
+  // Helper: sanitise a raw Docker log line before writing to PostgreSQL.
+  // Docker output can contain ANSI escape sequences and null bytes (0x00)
+  // which PostgreSQL's UTF-8 encoding rejects with error code 22021.
+  const sanitize = (raw: string): string =>
+    raw
+      // Strip ANSI escape codes (colours, cursor moves, etc.)
+      .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
+      // Strip null bytes — the root cause of the PostgreSQL 22021 error
+      .replace(/\x00/g, '')
+      .trimEnd();
+
+  // Helper: save a log line to DB + broadcast over WebSocket.
+  // Never throws — a bad log line must not abort the whole pipeline.
   const emitLog = async (line: string) => {
-    await prisma.log.create({ data: { runId, line } });
-    broadcastLog(wss, runId, line);
+    const clean = sanitize(line);
+    try {
+      await prisma.log.create({ data: { runId, line: clean } });
+    } catch (dbErr) {
+      console.error('[emitLog] DB write failed:', dbErr);
+    }
+    broadcastLog(wss, runId, clean);
   };
 
   try {
