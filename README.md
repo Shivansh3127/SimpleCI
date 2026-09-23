@@ -18,6 +18,8 @@ Built with **Express + Prisma + PostgreSQL + Dockerode** on the backend and **Re
 - 🌿 **Branch filtering** — only trigger CI on branches you configure (e.g. `main`, `develop`)
 - ↩ **Re-run button** — retry any failed pipeline from the UI without pushing an empty commit
 - 🛡️ **Stuck-run recovery** — RUNNING runs left by a server crash are auto-marked FAILED on restart
+- 🔄 **Auto-pull Docker images** — pulls `node:20-alpine` from Docker Hub automatically if not cached
+- 🔌 **DB connection retry** — reconnects to PostgreSQL on startup with exponential backoff (no manual intervention needed)
 
 ---
 
@@ -298,8 +300,29 @@ Log
 
 - No authentication on the dashboard — anyone with the URL can see all runs
 - No concurrency limit — simultaneous pushes create simultaneous Docker containers
-- The retry endpoint (`POST /runs/:id/retry`) uses default steps rather than re-reading `.simpleci.yaml` (next improvement)
+- The retry endpoint (`POST /runs/:id/retry`) uses default steps rather than re-reading `.simpleci.yaml` from the repo
 - No build caching — `npm install` re-downloads all packages on every run
+- Only works with **public GitHub repos** — private repos require Docker credentials
+
+---
+
+## Troubleshooting
+
+### Pipeline stays RUNNING forever
+The server may have crashed mid-run. Restart the backend — it automatically marks stuck `RUNNING` runs as `FAILED` on startup.
+
+### `node:20-alpine` not found
+This is handled automatically. SimpleCI pulls the image from Docker Hub on first use. No manual `docker pull` required. If Docker Desktop is not running, start it first.
+
+### Backend won't start / `Server has closed the connection`
+PostgreSQL may be slow to start. The backend retries the DB connection 5 times with a 2-second gap. If it still fails:
+```bash
+docker start simpleci-postgres   # or: docker compose up -d
+```
+Then restart the backend.
+
+### Webhook returns `Invalid signature`
+Make sure the `GITHUB_WEBHOOK_SECRET` in `apps/backend/.env` **exactly matches** the secret you set in GitHub → Repo Settings → Webhooks.
 
 ---
 
