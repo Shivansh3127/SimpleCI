@@ -40,9 +40,10 @@ export async function runPipeline(
   steps: PipelineStep[],
   wss: WebSocketServer
 ): Promise<void> {
-  // Build one big shell script: clone the repo, then run each step
+  // Build one big shell script: install git (alpine has none by default),
+  // clone the repo, then run each pipeline step
   const stepCommands = steps.map((s) => s.run).join(' && ');
-  const fullCommand = `git clone ${repoUrl} /workspace && cd /workspace && ${stepCommands}`;
+  const fullCommand = `apk add --no-cache git && git clone ${repoUrl} /workspace && cd /workspace && ${stepCommands}`;
 
   // Helper: save a log line to DB + broadcast over WebSocket
   const emitLog = async (line: string) => {

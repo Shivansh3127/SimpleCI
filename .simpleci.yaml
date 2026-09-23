@@ -3,18 +3,18 @@
 # When you push to GitHub, SimpleCI will read this file and run these steps.
 
 pipeline:
-  name: my-node-app
+  name: SimpleCI-backend
 
   branches:
     - main
     - develop    # only these branches will trigger CI
-    
+
   steps:
     - name: Install Dependencies
-      run: npm install
+      run: cd apps/backend && npm install
 
     - name: Run Tests
-      run: npm test
+      run: cd apps/backend && npm test
 
     - name: Build
-      run: npm run build
+      run: cd apps/backend && npm run build
