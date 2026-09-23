@@ -5,7 +5,7 @@ import http from 'http';
 import { WebSocketServer } from 'ws';
 import { createWebhookRouter } from './routes/webhook.js';
 import createRunsRouter from './routes/runs.js';
-import prisma from './db/prisma.js';
+import prisma, { connectWithRetry } from './db/prisma.js';
 
 const app = express();
 const PORT = process.env.PORT ?? 3000;
@@ -57,11 +57,18 @@ async function recoverStuckRuns() {
 }
 
 // ─── Start ────────────────────────────────────────────────────
-recoverStuckRuns().then(() => {
-  server.listen(PORT, () => {
-    console.log(`\n🚀 SimpleCI backend running at http://localhost:${PORT}`);
-    console.log(`   Health:   http://localhost:${PORT}/health`);
-    console.log(`   Runs API: http://localhost:${PORT}/runs`);
-    console.log(`   Webhook:  POST http://localhost:${PORT}/webhook/github\n`);
+// 1. Connect to DB (with retry)  2. Recover stuck runs  3. Listen
+connectWithRetry()
+  .then(() => recoverStuckRuns())
+  .then(() => {
+    server.listen(PORT, () => {
+      console.log(`\n🚀 SimpleCI backend running at http://localhost:${PORT}`);
+      console.log(`   Health:   http://localhost:${PORT}/health`);
+      console.log(`   Runs API: http://localhost:${PORT}/runs`);
+      console.log(`   Webhook:  POST http://localhost:${PORT}/webhook/github\n`);
+    });
+  })
+  .catch((err) => {
+    console.error('[Startup] Failed to connect to PostgreSQL after retries:', err);
+    process.exit(1);
   });
-});
