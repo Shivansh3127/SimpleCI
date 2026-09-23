@@ -4,7 +4,7 @@ import cors from 'cors';
 import http from 'http';
 import { WebSocketServer } from 'ws';
 import { createWebhookRouter } from './routes/webhook.js';
-import runsRouter from './routes/runs.js';
+import createRunsRouter from './routes/runs.js';
 import prisma from './db/prisma.js';
 
 const app = express();
@@ -35,7 +35,7 @@ wss.on('connection', (ws) => {
 
 // ─── Routes ───────────────────────────────────────────────────
 app.use('/webhook', createWebhookRouter(wss));
-app.use('/runs', runsRouter);
+app.use('/runs', createRunsRouter(wss));
 
 // Health check — useful to verify the server is running
 app.get('/health', (_req, res) => {

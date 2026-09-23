@@ -27,7 +27,24 @@ export default function RunDetail() {
   const [liveLogs, setLiveLogs] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
+
+  // Retry handler — calls POST /runs/:id/retry and navigates to the new run
+  const handleRetry = async () => {
+    if (!id || retrying) return;
+    setRetrying(true);
+    try {
+      const res = await fetch(`${API}/runs/${id}/retry`, { method: 'POST' });
+      if (!res.ok) throw new Error('Retry failed');
+      const data = await res.json();
+      // Navigate to the new run's detail page
+      window.location.href = `/runs/${data.runId}`;
+    } catch {
+      alert('Failed to retry the pipeline. Is the backend running?');
+      setRetrying(false);
+    }
+  };
 
   // Fetch the run + its existing logs from the REST API
   useEffect(() => {
@@ -116,7 +133,17 @@ export default function RunDetail() {
       </nav>
 
       <div className="page">
-        <Link to="/" className="back-link">← All Runs</Link>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <Link to="/" className="back-link" style={{ marginBottom: 0 }}>← All Runs</Link>
+          <button
+            className="refresh-btn"
+            onClick={handleRetry}
+            disabled={retrying || run.status === 'RUNNING'}
+            title={run.status === 'RUNNING' ? 'Pipeline is already running' : 'Re-run this pipeline'}
+          >
+            {retrying ? '⏳ Starting...' : '↩ Re-run'}
+          </button>
+        </div>
 
         <div className="card" style={{ marginBottom: 20 }}>
           {/* Run metadata header */}
