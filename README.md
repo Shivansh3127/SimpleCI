@@ -14,6 +14,10 @@ Built with **Express + Prisma + PostgreSQL + Dockerode** on the backend and **Re
 - 📡 **Live WebSocket log streaming** — watch pipeline output appear in real time in the browser
 - 🗄️ **Persistent run history** — all runs and logs stored in PostgreSQL via Prisma ORM
 - 🎨 **Dark terminal UI** — GitHub-style dark dashboard with status badges and color-coded logs
+- 📋 **`.simpleci.yaml` support** — define custom pipeline steps and branch filters per repo
+- 🌿 **Branch filtering** — only trigger CI on branches you configure (e.g. `main`, `develop`)
+- ↩ **Re-run button** — retry any failed pipeline from the UI without pushing an empty commit
+- 🛡️ **Stuck-run recovery** — RUNNING runs left by a server crash are auto-marked FAILED on restart
 
 ---
 
@@ -95,7 +99,7 @@ SimpleCI/
     │       │   └── verifyWebhook.ts  HMAC-SHA256 verification
     │       ├── routes/
     │       │   ├── webhook.ts  POST /webhook/github
-    │       │   └── runs.ts     GET /runs, GET /runs/:id
+    │       │   └── runs.ts     GET /runs, GET /runs/:id, POST /runs/:id/retry
     │       └── services/
     │           ├── dockerRunner.ts   Docker container + log streaming
     │           └── pipelineParser.ts .simpleci.yaml parser
@@ -203,11 +207,17 @@ Now push a commit — the pipeline will trigger automatically.
 
 ## Pipeline Config (`.simpleci.yaml`)
 
-Put this file in the root of the repo you're testing:
+Put this file in the **root of the repo you want SimpleCI to test** (not the SimpleCI repo itself).
 
 ```yaml
 pipeline:
   name: my-app
+
+  # Optional: only trigger CI on these branches.
+  # Remove the 'branches' key entirely to run CI on ALL branches.
+  branches:
+    - main
+    - develop
 
   steps:
     - name: Install Dependencies
@@ -220,7 +230,12 @@ pipeline:
       run: npm run build
 ```
 
-Steps are chained with `&&` — if any step fails, the pipeline stops immediately and the run is marked **FAILED**.
+**How it works:**
+- When a push event arrives, SimpleCI does a shallow `git clone` of the repo
+- It reads `.simpleci.yaml` from the cloned repo
+- If a `branches` list is defined, pushes to other branches are silently ignored
+- If no `.simpleci.yaml` is found, it falls back to the default steps above
+- Steps are chained with `&&` — if any step fails, the pipeline stops and the run is marked **FAILED**
 
 ---
 
@@ -232,6 +247,7 @@ Steps are chained with `&&` — if any step fails, the pipeline stops immediatel
 | `POST` | `/webhook/github` | GitHub push webhook receiver |
 | `GET` | `/runs` | List all pipeline runs (no logs) |
 | `GET` | `/runs/:id` | Single run with full log history |
+| `POST` | `/runs/:id/retry` | Re-run a pipeline using the same repo + commit |
 
 ### WebSocket
 
@@ -280,11 +296,10 @@ Log
 
 ## Known Limitations
 
-- No authentication on the dashboard — anyone with the URL can see runs
-- All pushes to all branches trigger a pipeline (no branch filtering)
-- No concurrency limit — simultaneous pushes create simultaneous containers
-- `.simpleci.yaml` parsing is implemented but not yet wired into the webhook handler (uses hardcoded default steps)
-- Frontend API URL is hardcoded to `localhost:3000` — not suitable for remote deployment without modification
+- No authentication on the dashboard — anyone with the URL can see all runs
+- No concurrency limit — simultaneous pushes create simultaneous Docker containers
+- The retry endpoint (`POST /runs/:id/retry`) uses default steps rather than re-reading `.simpleci.yaml` (next improvement)
+- No build caching — `npm install` re-downloads all packages on every run
 
 ---
 
