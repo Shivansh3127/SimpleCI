@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import type { Run } from '../types';
 import StatusBadge from '../components/StatusBadge';
 
-const API = 'http://localhost:3000';
+const API = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000';
 
 function formatDuration(start: string, end: string | null): string {
   if (!end) return '—';

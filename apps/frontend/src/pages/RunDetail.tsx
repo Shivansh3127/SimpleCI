@@ -4,8 +4,8 @@ import type { RunDetail as RunDetailType, WsMessage } from '../types';
 import StatusBadge from '../components/StatusBadge';
 import Terminal from '../components/Terminal';
 
-const API = 'http://localhost:3000';
-const WS_URL = 'ws://localhost:3000';
+const API = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000';
+const WS_URL = import.meta.env.VITE_WS_URL ?? 'ws://localhost:3000';
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString('en-IN', {
