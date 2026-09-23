@@ -41,9 +41,11 @@ export async function runPipeline(
   wss: WebSocketServer
 ): Promise<void> {
   // Build one big shell script: install git (alpine has none by default),
-  // clone the repo, then run each pipeline step
+  // clone the repo, then run each pipeline step.
+  // NOTE: We set WorkingDir = /workspace on the container so every step
+  // runs from the repo root — no need for 'cd' in the steps themselves.
   const stepCommands = steps.map((s) => s.run).join(' && ');
-  const fullCommand = `apk add --no-cache git && git clone ${repoUrl} /workspace && cd /workspace && ${stepCommands}`;
+  const fullCommand = `apk add --no-cache git && git clone ${repoUrl} /workspace && ${stepCommands}`;
 
   // Helper: sanitise a raw Docker log line before writing to PostgreSQL.
   // Docker output can contain ANSI escape sequences and null bytes (0x00)
@@ -78,6 +80,7 @@ export async function runPipeline(
     const container = await docker.createContainer({
       Image: 'node:20-alpine',        // lightweight Node.js image
       Cmd: ['sh', '-c', fullCommand], // run our shell script
+      WorkingDir: '/workspace',       // steps run from the cloned repo root
       AttachStdout: true,
       AttachStderr: true,
       HostConfig: {
