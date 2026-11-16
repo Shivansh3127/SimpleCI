@@ -3,8 +3,46 @@ import { WebSocketServer } from 'ws';
 import prisma from '../db/prisma.js';
 import { PipelineStep } from './pipelineParser.js';
 
-// Connect to the local Docker daemon (Docker Desktop on Windows)
 const docker = new Docker();
+
+/**
+ * Posts a commit status to GitHub so PRs show ✅ or ❌ from SimpleCI.
+ * Requires a user OAuth token with repo:status scope.
+ * Silently skips if token or repo info is missing.
+ */
+async function postCommitStatus(
+  token: string,
+  owner: string,
+  repo: string,
+  sha: string,
+  state: 'pending' | 'success' | 'failure' | 'error',
+  runId: string,
+) {
+  try {
+    const url = `https://api.github.com/repos/${owner}/${repo}/statuses/${sha}`;
+    const frontendUrl = process.env.FRONTEND_URL ?? 'http://localhost:5173';
+    await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization:  `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'User-Agent':   'SimpleCI/1.0',
+      },
+      body: JSON.stringify({
+        state,
+        target_url:  `${frontendUrl}/runs/${runId}`,
+        description: state === 'success' ? 'All checks passed' :
+                     state === 'failure' ? 'Pipeline failed' :
+                     state === 'pending' ? 'Pipeline running...' : 'Pipeline error',
+        context: 'SimpleCI',
+      }),
+    });
+    console.log(`[GitHub Status] Posted "${state}" for ${owner}/${repo}@${sha.slice(0,7)}`);
+  } catch (err) {
+    // Never fail the pipeline because of a status post failure
+    console.warn('[GitHub Status] Failed to post commit status:', err);
+  }
+}
 
 /**
  * Broadcasts a log line to all WebSocket clients watching a specific runId.
@@ -35,7 +73,11 @@ export async function runPipeline(
   runId: string,
   repoUrl: string,
   steps: PipelineStep[],
-  wss: WebSocketServer
+  wss: WebSocketServer,
+  githubToken?: string | null,
+  repoOwner?: string | null,
+  repoSlug?: string | null,
+  commitSha?: string | null,
 ): Promise<void> {
   const stepCommands = steps.map((s) => s.run).join(' && ');
   const fullCommand = `apk add --no-cache git && git clone ${repoUrl} /workspace && ${stepCommands}`;
@@ -71,6 +113,11 @@ export async function runPipeline(
       where: { id: runId },
       data: { status: 'RUNNING' },
     });
+
+    // Post "pending" status to GitHub
+    if (githubToken && repoOwner && repoSlug && commitSha) {
+      await postCommitStatus(githubToken, repoOwner, repoSlug, commitSha, 'pending', runId);
+    }
 
     await emitLog(`[SimpleCI] Starting pipeline for run: ${runId}`);
     await emitLog(`[SimpleCI] Repo: ${repoUrl}`);
@@ -172,12 +219,18 @@ export async function runPipeline(
         where: { id: runId },
         data: { status: 'SUCCESS', finishedAt: new Date() },
       });
+      if (githubToken && repoOwner && repoSlug && commitSha) {
+        await postCommitStatus(githubToken, repoOwner, repoSlug, commitSha, 'success', runId);
+      }
     } else {
       await emitLog(`\n[SimpleCI] ❌ Pipeline FAILED (exit code: ${exitCode})`);
       await prisma.run.update({
         where: { id: runId },
         data: { status: 'FAILED', finishedAt: new Date() },
       });
+      if (githubToken && repoOwner && repoSlug && commitSha) {
+        await postCommitStatus(githubToken, repoOwner, repoSlug, commitSha, 'failure', runId);
+      }
     }
   } catch (err) {
     // If the run was cancelled, the container.wait() throws — handle gracefully

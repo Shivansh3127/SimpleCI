@@ -9,6 +9,11 @@ export interface PipelineJobData {
   runId: string;
   repoUrl: string;
   steps: Array<{ name: string; run: string }>;
+  // Level 3: GitHub Commit Status API
+  githubToken: string | null;  // user's OAuth token
+  repoOwner:   string | null;  // e.g. "Shivansh3127"
+  repoSlug:    string | null;  // e.g. "SimpleCI"
+  commitSha:   string | null;  // full 40-char SHA
 }
 
 /**

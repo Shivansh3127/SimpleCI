@@ -9,6 +9,7 @@ export interface Run {
   status: 'QUEUED' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'CANCELLED';
   startedAt: string;
   finishedAt: string | null;
+  repositoryId: string | null;
 }
 
 export interface Log {
@@ -22,8 +23,16 @@ export interface RunDetail extends Run {
   logs: Log[];
 }
 
-// WebSocket message shape
 export interface WsMessage {
   runId: string;
   line: string;
+}
+
+export interface Repository {
+  id: string;
+  repoName: string;
+  repoUrl: string;
+  webhookSecret: string;
+  createdAt: string;
+  _count: { runs: number };
 }

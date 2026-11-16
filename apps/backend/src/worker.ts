@@ -42,14 +42,12 @@ const CONCURRENCY = Number(process.env.PIPELINE_CONCURRENCY ?? 3);
 const worker = new Worker<PipelineJobData>(
   'pipelines',
   async (job: Job<PipelineJobData>) => {
-    const { runId, repoUrl, steps } = job.data;
+    const { runId, repoUrl, steps, githubToken, repoOwner, repoSlug, commitSha } = job.data;
 
     console.log(`[Worker] Starting job ${job.id} for run ${runId}`);
-
-    // Update progress so BullMQ dashboard can show it
     await job.updateProgress(0);
 
-    await runPipeline(runId, repoUrl, steps, wss);
+    await runPipeline(runId, repoUrl, steps, wss, githubToken, repoOwner, repoSlug, commitSha);
 
     await job.updateProgress(100);
     console.log(`[Worker] Completed job ${job.id} for run ${runId}`);

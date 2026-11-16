@@ -20,29 +20,25 @@ export function createWebhookRouter(wss: WebSocketServer): Router {
   /**
    * POST /webhook/github
    *
-   * GitHub calls this endpoint on every push event.
-   *
-   * Level 2 change:
-   * - Instead of calling runPipeline() directly (fire-and-forget),
-   *   we add a job to the BullMQ queue.
-   * - The worker process picks it up and runs it with concurrency control.
-   * - Run is created with status 'QUEUED' — worker sets it to 'RUNNING'
-   *   when it actually starts executing.
+   * Level 3 changes:
+   * - Instead of one global GITHUB_WEBHOOK_SECRET in .env, each registered
+   *   repo has its own unique secret stored in the repositories table.
+   * - We identify the repo from the payload, look up its secret, then verify.
+   * - Run is linked to its Repository row (repositoryId FK).
+   * - Falls back to .env secret for backwards compatibility with unregistered repos.
    */
   router.post('/github', async (req: Request, res: Response) => {
-    const secret = process.env.GITHUB_WEBHOOK_SECRET ?? '';
-
-    // ── 1. Verify HMAC-SHA256 signature ──────────────────────────
-    const isValid = verifyGithubWebhook(req, secret);
-    if (!isValid) {
-      console.warn('[Webhook] ❌ Invalid signature — rejecting request');
-      res.status(401).json({ error: 'Invalid webhook signature' });
+    // Parse payload first (we need repo URL to look up the per-repo secret)
+    // We parse BEFORE verifying — this is safe because we still verify after.
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse((req.body as Buffer).toString('utf-8'));
+    } catch {
+      res.status(400).json({ error: 'Invalid JSON payload' });
       return;
     }
 
-    // ── 2. Parse payload ──────────────────────────────────────────
-    const payload = JSON.parse((req.body as Buffer).toString('utf-8')) as Record<string, unknown>;
-
+    // Only handle push events
     const event = req.headers['x-github-event'];
     if (event !== 'push') {
       res.status(200).json({ message: `Ignoring event: ${event}` });
@@ -54,19 +50,37 @@ export function createWebhookRouter(wss: WebSocketServer): Router {
     const headCommit = payload.head_commit as Record<string, unknown> | undefined;
 
     if (!ref || !repo || !headCommit) {
-      res.status(400).json({ error: 'Malformed push payload — missing ref, repository, or head_commit' });
+      res.status(400).json({ error: 'Malformed push payload' });
       return;
     }
 
-    const branch = ref.replace('refs/heads/', '');
-    const repoName = repo.name as string;
     const repoUrl = repo.clone_url as string;
+
+    // ── Look up the registered repo to get its unique webhook secret ──
+    // Falls back to the global .env secret for unregistered repos.
+    const registeredRepo = await prisma.repository.findUnique({
+      where: { repoUrl },
+      include: { user: { select: { accessToken: true, username: true } } },
+    });
+
+    const secret = registeredRepo?.webhookSecret ?? process.env.GITHUB_WEBHOOK_SECRET ?? '';
+
+    // ── Verify HMAC-SHA256 signature with the correct secret ──────
+    const isValid = verifyGithubWebhook(req, secret);
+    if (!isValid) {
+      console.warn('[Webhook] ❌ Invalid signature — rejecting request');
+      res.status(401).json({ error: 'Invalid webhook signature' });
+      return;
+    }
+
+    const branch    = ref.replace('refs/heads/', '');
+    const repoName  = repo.name as string;
     const commitSha = (headCommit.id as string).slice(0, 7);
     const commitMsg = (headCommit.message as string) ?? '(no message)';
 
     console.log(`[Webhook] ✅ Push from ${repoName}@${branch} (${commitSha})`);
 
-    // ── 3. Read .simpleci.yaml for branch filtering ───────────────
+    // ── Read .simpleci.yaml for branch filtering + steps ──────────
     let configSteps = getDefaultSteps();
     let tempDir: string | null = null;
 
@@ -85,42 +99,42 @@ export function createWebhookRouter(wss: WebSocketServer): Router {
 
       if (config?.pipeline?.steps?.length) {
         configSteps = config.pipeline.steps;
-        console.log(`[Webhook] 📋 Using .simpleci.yaml steps: ${configSteps.map((s) => s.name).join(' → ')}`);
-      } else {
-        console.log('[Webhook] 📋 No .simpleci.yaml found — using default steps');
       }
     } catch (err) {
-      console.warn('[Webhook] ⚠️  Could not clone repo to read .simpleci.yaml — using default steps:', err);
+      console.warn('[Webhook] ⚠️  Could not clone repo for config — using defaults:', err);
     } finally {
       if (tempDir) {
         try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
       }
     }
 
-    // ── 4. Create a Run record with status QUEUED ─────────────────
-    // Status is QUEUED here — the worker will flip it to RUNNING
-    // when it actually picks up the job and starts the container.
+    // ── Create Run record linked to the registered repo ───────────
     const run = await prisma.run.create({
-      data: { repoName, repoUrl, branch, commitSha, commitMsg, status: 'QUEUED' },
+      data: {
+        repositoryId: registeredRepo?.id ?? null,
+        repoName,
+        repoUrl,
+        branch,
+        commitSha,
+        commitMsg,
+        status: 'QUEUED',
+      },
     });
 
-    // ── 5. Add job to BullMQ queue ────────────────────────────────
-    // The worker process picks this up respecting the concurrency limit.
-    // Job data is serialized to Redis — survives server restarts.
+    // ── Queue the pipeline job ────────────────────────────────────
     const job = await pipelineQueue.add('pipeline', {
-      runId: run.id,
+      runId:       run.id,
       repoUrl,
-      steps: configSteps,
+      steps:       configSteps,
+      // Pass the GitHub token so the worker can post commit statuses
+      githubToken: registeredRepo?.user?.accessToken ?? null,
+      repoOwner:   (repo.owner as any)?.login ?? null,
+      repoSlug:    repo.name as string,
+      commitSha:   (headCommit.id as string), // full SHA for status API
     });
 
     console.log(`[Webhook] 📥 Queued job ${job.id} for run ${run.id}`);
-
-    // ── 6. Respond immediately to GitHub ─────────────────────────
-    res.status(202).json({
-      message: 'Pipeline queued',
-      runId: run.id,
-      jobId: job.id,
-    });
+    res.status(202).json({ message: 'Pipeline queued', runId: run.id, jobId: job.id });
   });
 
   return router;

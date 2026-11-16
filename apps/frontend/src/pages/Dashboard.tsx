@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import type { Run } from '../types';
 import StatusBadge from '../components/StatusBadge';
+import { useAuth } from '../hooks/useAuth';
 
 const API = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000';
 
@@ -20,28 +21,28 @@ function formatDate(iso: string): string {
 }
 
 export default function Dashboard() {
+  const { user, logout } = useAuth();
   const [runs, setRuns] = useState<Run[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const fetchRuns = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/runs`);
+      const res = await fetch(`${API}/runs`, { credentials: 'include' });
       if (!res.ok) throw new Error(`Server returned ${res.status}`);
       const data: Run[] = await res.json();
       setRuns(data);
       setError(null);
-    } catch (e) {
+    } catch {
       setError('Cannot connect to SimpleCI backend. Is it running?');
     } finally {
       setLoading(false);
     }
   }, []);
 
-  // Fetch on mount
   useEffect(() => { fetchRuns(); }, [fetchRuns]);
 
-  // Auto-refresh every 5s so RUNNING → SUCCESS/FAILED updates without manual refresh
+  // Auto-refresh every 5s
   useEffect(() => {
     const interval = setInterval(fetchRuns, 5000);
     return () => clearInterval(interval);
@@ -52,6 +53,19 @@ export default function Dashboard() {
       <nav className="navbar">
         <div className="navbar-logo">Simple<span>CI</span></div>
         <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>Pipeline Dashboard</span>
+
+        {/* User info + settings link */}
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
+          <Link to="/settings" className="refresh-btn" style={{ textDecoration: 'none', fontSize: 13 }}>
+            ⚙ Repos
+          </Link>
+          {user?.avatarUrl && (
+            <img src={user.avatarUrl} alt={user.username}
+              style={{ width: 28, height: 28, borderRadius: '50%', border: '1px solid var(--border)' }} />
+          )}
+          <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>{user?.username}</span>
+          <button className="refresh-btn" onClick={logout} style={{ fontSize: 13 }}>Sign out</button>
+        </div>
       </nav>
 
       <div className="page">
@@ -77,7 +91,9 @@ export default function Dashboard() {
         {!loading && !error && runs.length === 0 && (
           <div className="empty-state">
             <h3>No pipeline runs yet</h3>
-            <p>Push a commit to a repo with a GitHub webhook configured to see runs appear here.</p>
+            <p>
+              Register a repo in <Link to="/settings">Settings</Link> and push a commit to trigger your first run.
+            </p>
           </div>
         )}
 
