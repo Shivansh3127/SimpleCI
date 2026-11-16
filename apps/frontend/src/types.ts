@@ -6,7 +6,7 @@ export interface Run {
   branch: string;
   commitSha: string;
   commitMsg: string;
-  status: 'RUNNING' | 'SUCCESS' | 'FAILED';
+  status: 'QUEUED' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'CANCELLED';
   startedAt: string;
   finishedAt: string | null;
 }

@@ -22,6 +22,23 @@ services:
       timeout: 5s
       retries: 5
 
+  # ── Redis — BullMQ job queue storage ──────────────────────────
+  # BullMQ uses Redis to persist jobs so they survive server restarts.
+  redis:
+    image: redis:7-alpine
+    container_name: simpleci-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   postgres_data:
+    driver: local
+  redis_data:
     driver: local

@@ -4,16 +4,20 @@ interface Props {
   status: Run['status'];
 }
 
-const labels = {
-  RUNNING: 'Running',
-  SUCCESS: 'Success',
-  FAILED:  'Failed',
+const labels: Record<Run['status'], string> = {
+  QUEUED:    'Queued',
+  RUNNING:   'Running',
+  SUCCESS:   'Success',
+  FAILED:    'Failed',
+  CANCELLED: 'Cancelled',
 };
 
-const classes = {
-  RUNNING: 'badge badge-running',
-  SUCCESS: 'badge badge-success',
-  FAILED:  'badge badge-failed',
+const classes: Record<Run['status'], string> = {
+  QUEUED:    'badge badge-queued',
+  RUNNING:   'badge badge-running',
+  SUCCESS:   'badge badge-success',
+  FAILED:    'badge badge-failed',
+  CANCELLED: 'badge badge-cancelled',
 };
 
 export default function StatusBadge({ status }: Props) {

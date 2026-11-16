@@ -12,15 +12,16 @@ datasource db {
 
 // A pipeline "run" — created every time GitHub fires a webhook
 model Run {
-  id         String   @id @default(uuid())
-  repoName   String                          // e.g. "my-node-app"
-  repoUrl    String                          // e.g. "https://github.com/you/my-node-app"
-  branch     String                          // e.g. "main"
-  commitSha  String                          // e.g. "d4f9a1b"
-  commitMsg  String                          // commit message
-  status     String   @default("RUNNING")   // RUNNING | SUCCESS | FAILED
-  startedAt  DateTime @default(now())
-  finishedAt DateTime?
+  id          String   @id @default(uuid())
+  repoName    String                           // e.g. "my-node-app"
+  repoUrl     String                           // e.g. "https://github.com/you/my-node-app"
+  branch      String                           // e.g. "main"
+  commitSha   String                           // e.g. "d4f9a1b"
+  commitMsg   String                           // commit message
+  status      String   @default("QUEUED")     // QUEUED | RUNNING | SUCCESS | FAILED | CANCELLED
+  containerId String?                          // Docker container ID — set when container starts
+  startedAt   DateTime @default(now())
+  finishedAt  DateTime?
 
   // One run has many log lines
   logs Log[]

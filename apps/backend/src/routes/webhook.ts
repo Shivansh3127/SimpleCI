@@ -10,7 +10,7 @@ import {
   getAllowedBranches,
   isBranchAllowed,
 } from '../services/pipelineParser.js';
-import { runPipeline } from '../services/dockerRunner.js';
+import { pipelineQueue } from '../queue/pipelineQueue.js';
 import prisma from '../db/prisma.js';
 import { WebSocketServer } from 'ws';
 
@@ -21,13 +21,13 @@ export function createWebhookRouter(wss: WebSocketServer): Router {
    * POST /webhook/github
    *
    * GitHub calls this endpoint on every push event.
-   * Steps:
-   *  1. Verify HMAC-SHA256 signature
-   *  2. Parse and validate the payload
-   *  3. Check branch filter from .simpleci.yaml (if configured)
-   *  4. Create a Run record in the DB
-   *  5. Respond 202 immediately (GitHub has a 10s timeout)
-   *  6. Clone repo, read .simpleci.yaml, run pipeline in background
+   *
+   * Level 2 change:
+   * - Instead of calling runPipeline() directly (fire-and-forget),
+   *   we add a job to the BullMQ queue.
+   * - The worker process picks it up and runs it with concurrency control.
+   * - Run is created with status 'QUEUED' — worker sets it to 'RUNNING'
+   *   when it actually starts executing.
    */
   router.post('/github', async (req: Request, res: Response) => {
     const secret = process.env.GITHUB_WEBHOOK_SECRET ?? '';
@@ -41,17 +41,14 @@ export function createWebhookRouter(wss: WebSocketServer): Router {
     }
 
     // ── 2. Parse payload ──────────────────────────────────────────
-    // req.body is a raw Buffer (because of express.raw() in server.ts).
     const payload = JSON.parse((req.body as Buffer).toString('utf-8')) as Record<string, unknown>;
 
-    // Only handle push events
     const event = req.headers['x-github-event'];
     if (event !== 'push') {
       res.status(200).json({ message: `Ignoring event: ${event}` });
       return;
     }
 
-    // Validate required payload fields
     const ref = payload.ref as string | undefined;
     const repo = payload.repository as Record<string, unknown> | undefined;
     const headCommit = payload.head_commit as Record<string, unknown> | undefined;
@@ -70,8 +67,6 @@ export function createWebhookRouter(wss: WebSocketServer): Router {
     console.log(`[Webhook] ✅ Push from ${repoName}@${branch} (${commitSha})`);
 
     // ── 3. Read .simpleci.yaml for branch filtering ───────────────
-    // We do a shallow clone to a temp dir just to read the config file.
-    // This lets us filter branches BEFORE creating a DB run record.
     let configSteps = getDefaultSteps();
     let tempDir: string | null = null;
 
@@ -82,14 +77,12 @@ export function createWebhookRouter(wss: WebSocketServer): Router {
       const config = parsePipelineConfig(tempDir);
       const allowedBranches = getAllowedBranches(config);
 
-      // Branch filter: if .simpleci.yaml defines branches, only run for those
       if (!isBranchAllowed(branch, allowedBranches)) {
-        console.log(`[Webhook] ⏭️  Branch "${branch}" not in allowed list [${allowedBranches.join(', ')}] — skipping`);
+        console.log(`[Webhook] ⏭️  Branch "${branch}" not in allowed list — skipping`);
         res.status(200).json({ message: `Branch "${branch}" not configured for CI — skipping` });
         return;
       }
 
-      // Use steps from .simpleci.yaml if available, otherwise use defaults
       if (config?.pipeline?.steps?.length) {
         configSteps = config.pipeline.steps;
         console.log(`[Webhook] 📋 Using .simpleci.yaml steps: ${configSteps.map((s) => s.name).join(' → ')}`);
@@ -97,30 +90,38 @@ export function createWebhookRouter(wss: WebSocketServer): Router {
         console.log('[Webhook] 📋 No .simpleci.yaml found — using default steps');
       }
     } catch (err) {
-      // Clone failed (e.g. private repo, invalid URL) — fall back to defaults and continue
       console.warn('[Webhook] ⚠️  Could not clone repo to read .simpleci.yaml — using default steps:', err);
     } finally {
-      // Clean up the temp clone
       if (tempDir) {
         try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
       }
     }
 
-    // ── 4. Create a Run record ────────────────────────────────────
+    // ── 4. Create a Run record with status QUEUED ─────────────────
+    // Status is QUEUED here — the worker will flip it to RUNNING
+    // when it actually picks up the job and starts the container.
     const run = await prisma.run.create({
-      data: { repoName, repoUrl, branch, commitSha, commitMsg, status: 'RUNNING' },
+      data: { repoName, repoUrl, branch, commitSha, commitMsg, status: 'QUEUED' },
     });
 
-    // ── 5. Respond immediately to GitHub ─────────────────────────
-    res.status(202).json({ message: 'Pipeline started', runId: run.id });
+    // ── 5. Add job to BullMQ queue ────────────────────────────────
+    // The worker process picks this up respecting the concurrency limit.
+    // Job data is serialized to Redis — survives server restarts.
+    const job = await pipelineQueue.add('pipeline', {
+      runId: run.id,
+      repoUrl,
+      steps: configSteps,
+    });
 
-    // ── 6. Run the pipeline in the background ─────────────────────
-    // (no await — runPipeline does its own cloning inside Docker)
-    runPipeline(run.id, repoUrl, configSteps, wss).catch((err) => {
-      console.error('[Pipeline] Unhandled error:', err);
+    console.log(`[Webhook] 📥 Queued job ${job.id} for run ${run.id}`);
+
+    // ── 6. Respond immediately to GitHub ─────────────────────────
+    res.status(202).json({
+      message: 'Pipeline queued',
+      runId: run.id,
+      jobId: job.id,
     });
   });
 
   return router;
 }
-

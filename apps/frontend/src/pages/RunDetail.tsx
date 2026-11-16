@@ -28,9 +28,10 @@ export default function RunDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
 
-  // Retry handler — calls POST /runs/:id/retry and navigates to the new run
+  // Re-run handler
   const handleRetry = async () => {
     if (!id || retrying) return;
     setRetrying(true);
@@ -38,11 +39,28 @@ export default function RunDetail() {
       const res = await fetch(`${API}/runs/${id}/retry`, { method: 'POST' });
       if (!res.ok) throw new Error('Retry failed');
       const data = await res.json();
-      // Navigate to the new run's detail page
       window.location.href = `/runs/${data.runId}`;
     } catch {
       alert('Failed to retry the pipeline. Is the backend running?');
       setRetrying(false);
+    }
+  };
+
+  // Cancel handler — calls DELETE /runs/:id
+  const handleCancel = async () => {
+    if (!id || cancelling) return;
+    if (!confirm('Cancel this pipeline run?')) return;
+    setCancelling(true);
+    try {
+      const res = await fetch(`${API}/runs/${id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Cancel failed');
+      // Refresh run data to show CANCELLED status
+      const updated = await fetch(`${API}/runs/${id}`).then(r => r.json());
+      setRun(updated);
+    } catch {
+      alert('Failed to cancel the pipeline.');
+    } finally {
+      setCancelling(false);
     }
   };
 
@@ -56,16 +74,15 @@ export default function RunDetail() {
       })
       .then((data: RunDetailType) => {
         setRun(data);
-        // Pre-populate terminal with logs already in the DB
         setLiveLogs(data.logs.map((l) => l.line));
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   }, [id]);
 
-  // Connect to WebSocket for live streaming (only if pipeline is RUNNING)
+  // Connect to WebSocket for live streaming (only if QUEUED or RUNNING)
   useEffect(() => {
-    if (!run || run.status !== 'RUNNING') return;
+    if (!run || (run.status !== 'RUNNING' && run.status !== 'QUEUED')) return;
 
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
@@ -74,7 +91,6 @@ export default function RunDetail() {
 
     ws.onmessage = (event) => {
       const msg: WsMessage = JSON.parse(event.data);
-      // Filter: only append lines belonging to THIS run
       if (msg.runId === id) {
         setLiveLogs((prev) => [...prev, msg.line]);
       }
@@ -82,7 +98,6 @@ export default function RunDetail() {
 
     ws.onclose = () => {
       console.log('[WS] Disconnected');
-      // When WS closes, refresh the run to get final status
       fetch(`${API}/runs/${id}`)
         .then((r) => r.json())
         .then((data: RunDetailType) => setRun(data))
@@ -92,15 +107,18 @@ export default function RunDetail() {
     return () => ws.close();
   }, [run?.status, id]);
 
-  // Poll run status every 3s while RUNNING (updates finishedAt and status)
+  // Poll run status every 3s while QUEUED or RUNNING
   useEffect(() => {
-    if (!run || run.status !== 'RUNNING') return;
+    if (!run || (run.status !== 'RUNNING' && run.status !== 'QUEUED')) return;
     const interval = setInterval(async () => {
       const res = await fetch(`${API}/runs/${id}`);
       const data: RunDetailType = await res.json();
-      if (data.status !== 'RUNNING') {
+      if (data.status !== 'RUNNING' && data.status !== 'QUEUED') {
         setRun(data);
         clearInterval(interval);
+      } else {
+        // Update status in case it changed from QUEUED → RUNNING
+        setRun(data);
       }
     }, 3000);
     return () => clearInterval(interval);
@@ -123,7 +141,8 @@ export default function RunDetail() {
     </>
   );
 
-  const isLive = run.status === 'RUNNING';
+  const isActive = run.status === 'RUNNING' || run.status === 'QUEUED';
+  const canCancel = run.status === 'RUNNING' || run.status === 'QUEUED';
 
   return (
     <>
@@ -135,18 +154,35 @@ export default function RunDetail() {
       <div className="page">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
           <Link to="/" className="back-link" style={{ marginBottom: 0 }}>← All Runs</Link>
-          <button
-            className="refresh-btn"
-            onClick={handleRetry}
-            disabled={retrying || run.status === 'RUNNING'}
-            title={run.status === 'RUNNING' ? 'Pipeline is already running' : 'Re-run this pipeline'}
-          >
-            {retrying ? '⏳ Starting...' : '↩ Re-run'}
-          </button>
+
+          <div style={{ display: 'flex', gap: 8 }}>
+            {/* Cancel button — only shown for QUEUED or RUNNING */}
+            {canCancel && (
+              <button
+                className="refresh-btn"
+                onClick={handleCancel}
+                disabled={cancelling}
+                style={{ background: 'rgba(248,81,73,0.1)', color: 'var(--red)', borderColor: 'rgba(248,81,73,0.3)' }}
+                title="Stop this pipeline run"
+              >
+                {cancelling ? '⏳ Cancelling...' : '✕ Cancel'}
+              </button>
+            )}
+
+            {/* Re-run button */}
+            <button
+              className="refresh-btn"
+              onClick={handleRetry}
+              disabled={retrying || isActive}
+              title={isActive ? 'Pipeline is already active' : 'Re-run this pipeline'}
+            >
+              {retrying ? '⏳ Starting...' : '↩ Re-run'}
+            </button>
+          </div>
         </div>
 
         <div className="card" style={{ marginBottom: 20 }}>
-          {/* Run metadata header */}
+          {/* Run metadata */}
           <div className="run-meta">
             <div className="run-meta-item">
               <span className="run-meta-label">Status</span>
@@ -183,14 +219,16 @@ export default function RunDetail() {
           <div style={{ padding: 20 }}>
             <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
               <span style={{ fontWeight: 600, fontSize: 13 }}>
-                {isLive && <span className="live-dot" />}
-                {isLive ? 'Live Output' : 'Pipeline Output'}
+                {run.status === 'RUNNING' && <span className="live-dot" />}
+                {run.status === 'QUEUED'  && <span style={{ marginRight: 6 }}>⏳</span>}
+                {run.status === 'QUEUED'  ? 'Waiting in queue...' :
+                 run.status === 'RUNNING' ? 'Live Output' : 'Pipeline Output'}
               </span>
               <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: 12 }}>
                 {liveLogs.length} lines
               </span>
             </div>
-            <Terminal lines={liveLogs} isLive={isLive} />
+            <Terminal lines={liveLogs} isLive={run.status === 'RUNNING'} />
           </div>
         </div>
       </div>
