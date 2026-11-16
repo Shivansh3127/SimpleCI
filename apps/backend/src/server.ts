@@ -8,7 +8,7 @@ import cors from 'cors';
 import http from 'http';
 import session from 'express-session';
 import passport from 'passport';
-import { RedisStore } from 'connect-redis';
+import connectRedis from 'connect-redis';
 import { WebSocketServer } from 'ws';
 import { createWebhookRouter } from './routes/webhook.js';
 import createRunsRouter from './routes/runs.js';
@@ -42,6 +42,8 @@ app.use(httpMetricsMiddleware);
 
 // ─── Session ──────────────────────────────────────────────────
 // Sessions stored in Redis (not in-memory) so they survive restarts
+// connect-redis v6 supports ioredis natively (v7+ dropped support)
+const RedisStore = connectRedis(session);
 app.use(session({
   store: new RedisStore({ client: redisConnection as any }),
   secret: process.env.SESSION_SECRET ?? 'simpleci-dev-secret-change-in-prod',
