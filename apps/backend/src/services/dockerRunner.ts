@@ -2,8 +2,28 @@ import Docker from 'dockerode';
 import { WebSocketServer } from 'ws';
 import prisma from '../db/prisma.js';
 import { PipelineStep } from './pipelineParser.js';
+import { childLogger } from '../lib/logger.js';
 
 const docker = new Docker();
+
+/**
+ * Level 4 — Build Cache
+ *
+ * We mount a named Docker volume at /cache inside the container.
+ * npm, pip, and other package managers can be configured to use it
+ * as their cache directory, so packages are reused across runs.
+ *
+ * The volume is shared across ALL runs on this host, so a package
+ * installed by run A is immediately available to run B.
+ *
+ * Volume name: simpleci-build-cache
+ * npm:  export npm_config_cache=/cache/npm
+ * pip:  export PIP_CACHE_DIR=/cache/pip
+ *
+ * The .simpleci.yaml user does NOT need to do anything special —
+ * we set the env vars automatically in every container.
+ */
+const BUILD_CACHE_VOLUME = 'simpleci-build-cache';
 
 /**
  * Posts a commit status to GitHub so PRs show ✅ or ❌ from SimpleCI.
@@ -40,8 +60,7 @@ async function postCommitStatus(
     console.log(`[GitHub Status] Posted "${state}" for ${owner}/${repo}@${sha.slice(0,7)}`);
   } catch (err) {
     // Never fail the pipeline because of a status post failure
-    console.warn('[GitHub Status] Failed to post commit status:', err);
-  }
+    console.warn('[GitHub Status] Failed to post commit status:', err);  }
 }
 
 /**
@@ -79,8 +98,12 @@ export async function runPipeline(
   repoSlug?: string | null,
   commitSha?: string | null,
 ): Promise<void> {
+  const log = childLogger({ runId, repo: repoUrl });
+
   const stepCommands = steps.map((s) => s.run).join(' && ');
-  const fullCommand = `apk add --no-cache git && git clone ${repoUrl} /workspace && ${stepCommands}`;
+  // Set cache dirs automatically so npm/pip use the shared volume
+  const cacheEnvPrefix = 'export npm_config_cache=/cache/npm PIP_CACHE_DIR=/cache/pip';
+  const fullCommand = `apk add --no-cache git && git clone ${repoUrl} /workspace && cd /workspace && ${cacheEnvPrefix} && ${stepCommands}`;
 
   // Helper: sanitise a raw Docker log line before writing to PostgreSQL.
   const sanitize = (raw: string): string =>
@@ -96,7 +119,7 @@ export async function runPipeline(
     try {
       await prisma.log.create({ data: { runId, line: clean } });
     } catch (dbErr) {
-      console.error('[emitLog] DB write failed:', dbErr);
+      log.error({ err: dbErr }, 'emitLog: DB write failed');
     }
     broadcastLog(wss, runId, clean);
   };
@@ -151,6 +174,8 @@ export async function runPipeline(
     }
 
     // Create a Docker container
+    // Level 4: mount the named build-cache volume at /cache inside the container
+    // so npm/pip packages are reused across runs (much faster subsequent builds).
     const container = await docker.createContainer({
       Image: IMAGE,
       Cmd: ['sh', '-c', fullCommand],
@@ -161,6 +186,8 @@ export async function runPipeline(
         AutoRemove: true,
         Memory: 512 * 1024 * 1024,  // 512 MB
         NanoCpus: 500_000_000,       // 0.5 CPU
+        // Build cache volume: persists npm/pip packages between runs
+        Binds: [`${BUILD_CACHE_VOLUME}:/cache`],
       },
     });
 

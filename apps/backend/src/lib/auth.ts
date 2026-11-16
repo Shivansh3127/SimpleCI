@@ -14,11 +14,29 @@ import prisma from '../db/prisma.js';
  * 6. User object stored in session
  */
 export function configurePassport() {
+  const clientID     = process.env.GITHUB_CLIENT_ID;
+  const clientSecret = process.env.GITHUB_CLIENT_SECRET;
+
+  if (!clientID || clientID === 'your_client_id_here' ||
+      !clientSecret || clientSecret === 'your_client_secret_here') {
+    console.warn('[Auth] ⚠️  GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET not configured.');
+    console.warn('[Auth]     OAuth login is DISABLED. Set them in .env to enable it.');
+    // Serialize/deserialize still needed even without OAuth
+    passport.serializeUser((user: any, done) => done(null, user.id));
+    passport.deserializeUser(async (id: string, done) => {
+      try {
+        const user = await prisma.user.findUnique({ where: { id } });
+        done(null, user);
+      } catch (err) { done(err); }
+    });
+    return;
+  }
+
   passport.use(
     new GitHubStrategy(
       {
-        clientID:     process.env.GITHUB_CLIENT_ID!,
-        clientSecret: process.env.GITHUB_CLIENT_SECRET!,
+        clientID,
+        clientSecret,
         callbackURL:  process.env.GITHUB_CALLBACK_URL ?? 'http://localhost:3000/auth/github/callback',
         scope: ['user:email', 'repo:status'], // repo:status = can post commit statuses
       },

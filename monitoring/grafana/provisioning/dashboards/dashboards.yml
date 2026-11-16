@@ -1,0 +1,13 @@
+# ─────────────────────────────────────────────────────────────
+# dashboards.yml — Tell Grafana to load dashboards from /var/lib/grafana/dashboards
+# ─────────────────────────────────────────────────────────────
+apiVersion: 1
+
+providers:
+  - name: SimpleCI
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

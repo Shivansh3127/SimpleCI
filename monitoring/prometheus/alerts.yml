@@ -1,0 +1,111 @@
+# ─────────────────────────────────────────────────────────────
+# alerts.yml — Alertmanager rules for SimpleCI
+# ─────────────────────────────────────────────────────────────
+# Loaded by Prometheus (rule_files in prometheus.yml)
+# Sends alerts to Alertmanager when rules fire.
+# ─────────────────────────────────────────────────────────────
+
+groups:
+  - name: simpleci
+    rules:
+
+      # ── Pipeline health ──────────────────────────────────────
+      - alert: HighPipelineFailureRate
+        expr: |
+          rate(simpleci_pipeline_total{status="failed"}[5m])
+          /
+          (rate(simpleci_pipeline_total{status="success"}[5m]) + rate(simpleci_pipeline_total{status="failed"}[5m]))
+          > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High pipeline failure rate"
+          description: "More than 50% of pipelines are failing in the last 5 minutes."
+
+      - alert: SlowPipelines
+        expr: |
+          histogram_quantile(0.95,
+            rate(simpleci_pipeline_duration_ms_bucket[10m])
+          ) > 300000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pipelines are running slowly"
+          description: "P95 pipeline duration exceeded 5 minutes over the last 10 minutes."
+
+      # ── Queue health ─────────────────────────────────────────
+      - alert: QueueDepthHigh
+        expr: simpleci_queue_depth > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BullMQ queue is backing up"
+          description: "More than 10 jobs are queued. Add more worker capacity."
+
+      - alert: QueueDepthCritical
+        expr: simpleci_queue_depth > 50
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "BullMQ queue critically backed up"
+          description: "More than 50 pipeline jobs waiting. Immediate attention required."
+
+      # ── Container health ─────────────────────────────────────
+      - alert: TooManyContainers
+        expr: simpleci_active_containers > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Too many containers running"
+          description: "More than 10 Docker containers are running simultaneously."
+
+      # ── Backend health ───────────────────────────────────────
+      - alert: BackendDown
+        expr: up{job="simpleci"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SimpleCI backend is down"
+          description: "Prometheus cannot reach /metrics on the SimpleCI backend."
+
+      - alert: HighErrorRate
+        expr: |
+          rate(simpleci_http_requests_total{status_code=~"5.."}[5m])
+          /
+          rate(simpleci_http_requests_total[5m])
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High HTTP error rate"
+          description: "More than 5% of HTTP responses are 5xx errors."
+
+      # ── Node.js health ────────────────────────────────────────
+      - alert: HighHeapUsage
+        expr: |
+          simpleci_node_nodejs_heap_size_used_bytes
+          /
+          simpleci_node_nodejs_heap_size_total_bytes
+          > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node.js heap usage very high"
+          description: "Heap is over 90% full — possible memory leak."
+
+      - alert: HighEventLoopLag
+        expr: simpleci_node_nodejs_eventloop_lag_seconds > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node.js event loop is lagging"
+          description: "Event loop lag > 100ms. The process may be CPU-bound."

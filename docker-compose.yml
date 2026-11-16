@@ -1,10 +1,22 @@
 # ─────────────────────────────────────────────────────────────
-# docker-compose.yml
-# Starts PostgreSQL locally for SimpleCI
-# Run with: docker compose up -d
+# docker-compose.yml — SimpleCI infrastructure
+#
+# Services:
+#   postgres     — PostgreSQL 16 (database)
+#   redis        — Redis 7 (BullMQ queue + sessions)
+#   prometheus   — Scrapes /metrics from the backend
+#   grafana      — Dashboards (login: admin / simpleci)
+#   alertmanager — Fires alerts when Prometheus rules trigger
+#   jaeger       — Distributed tracing UI (OpenTelemetry)
+#
+# Start everything:   docker compose up -d
+# Stop everything:    docker compose down
+# View logs:          docker compose logs -f <service>
 # ─────────────────────────────────────────────────────────────
 
 services:
+
+  # ── Core infrastructure ────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     container_name: simpleci-postgres
@@ -22,8 +34,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Redis — BullMQ job queue storage ──────────────────────────
-  # BullMQ uses Redis to persist jobs so they survive server restarts.
   redis:
     image: redis:7-alpine
     container_name: simpleci-redis
@@ -37,8 +47,90 @@ services:
       timeout: 5s
       retries: 5
 
+  # ── Observability stack ────────────────────────────────────
+
+  # Prometheus — scrapes /metrics every 15s
+  # Web UI: http://localhost:9090
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: simpleci-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
+      - --web.enable-lifecycle       # Allow hot-reload: POST /-/reload
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # Lets Prometheus reach the host backend
+    restart: unless-stopped
+
+  # Grafana — dashboards for Prometheus data
+  # Web UI: http://localhost:3030  (login: admin / simpleci)
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: simpleci-grafana
+    ports:
+      - "3030:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: simpleci
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # Alertmanager — receives alerts from Prometheus and routes them
+  # Web UI: http://localhost:9093
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: simpleci-alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    restart: unless-stopped
+
+  # Jaeger — distributed tracing (OpenTelemetry spans)
+  # Web UI:    http://localhost:16686
+  # OTLP HTTP: http://localhost:4318
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    container_name: simpleci-jaeger
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP  ← backend sends traces here
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    restart: unless-stopped
+
 volumes:
   postgres_data:
     driver: local
   redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  alertmanager_data:
+    driver: local
+  # Level 4: Shared build cache volume — mounted into every pipeline container
+  # so npm/pip packages are reused across runs (dramatically speeds up repeat builds)
+  simpleci-build-cache:
     driver: local

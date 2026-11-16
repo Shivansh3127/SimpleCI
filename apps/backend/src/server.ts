@@ -1,3 +1,7 @@
+// ─── OpenTelemetry: MUST be first (instruments modules before they load) ──────
+import { initTracing } from './lib/tracing.js';
+initTracing('simpleci-server');
+
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
@@ -13,6 +17,10 @@ import reposRouter from './routes/repos.js';
 import prisma, { connectWithRetry } from './db/prisma.js';
 import { configurePassport } from './lib/auth.js';
 import { redisConnection } from './queue/redisConnection.js';
+import { registry, queueDepthGauge } from './lib/metrics.js';
+import { httpMetricsMiddleware } from './middleware/httpMetrics.js';
+import { pipelineQueue } from './queue/pipelineQueue.js';
+import logger from './lib/logger.js';
 
 const app = express();
 const PORT = process.env.PORT ?? 3000;
@@ -28,6 +36,9 @@ app.use(cors({
 // Raw body parser for webhook (must come before json parser)
 app.use('/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
+
+// Record HTTP metrics for every request
+app.use(httpMetricsMiddleware);
 
 // ─── Session ──────────────────────────────────────────────────
 // Sessions stored in Redis (not in-memory) so they survive restarts
@@ -54,8 +65,8 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
 wss.on('connection', (ws) => {
-  console.log('[WS] Client connected');
-  ws.on('close', () => console.log('[WS] Client disconnected'));
+  logger.debug('WebSocket client connected');
+  ws.on('close', () => logger.debug('WebSocket client disconnected'));
 });
 
 // ─── Routes ───────────────────────────────────────────────────
@@ -65,7 +76,24 @@ app.use('/runs',    createRunsRouter(wss));
 app.use('/repos',   reposRouter);
 
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '3.0.0' });
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '4.0.0' });
+});
+
+// ─── Prometheus metrics endpoint ──────────────────────────────
+// Scraped by Prometheus every 15s. Visualised in Grafana.
+app.get('/metrics', async (_req, res) => {
+  try {
+    // Update queue depth gauge before every scrape
+    const waiting = await pipelineQueue.getWaitingCount();
+    const active  = await pipelineQueue.getActiveCount();
+    queueDepthGauge.set(waiting + active);
+
+    res.set('Content-Type', registry.contentType);
+    res.end(await registry.metrics());
+  } catch (err) {
+    logger.error({ err }, 'Failed to collect metrics');
+    res.status(500).end('Error collecting metrics');
+  }
 });
 
 // ─── Startup: recover stuck runs ──────────────────────────────
@@ -75,7 +103,7 @@ async function recoverStuckRuns() {
     data: { status: 'FAILED', finishedAt: new Date() },
   });
   if (stuck.count > 0) {
-    console.warn(`[Startup] ⚠️  Recovered ${stuck.count} stuck RUNNING run(s) → FAILED`);
+    logger.warn(`Recovered ${stuck.count} stuck RUNNING run(s) → FAILED`);
   }
 }
 
@@ -84,15 +112,16 @@ connectWithRetry()
   .then(() => recoverStuckRuns())
   .then(() => {
     server.listen(PORT, () => {
-      console.log(`\n🚀 SimpleCI backend running at http://localhost:${PORT}`);
-      console.log(`   Health:   http://localhost:${PORT}/health`);
-      console.log(`   Login:    http://localhost:${PORT}/auth/github`);
-      console.log(`   Runs API: http://localhost:${PORT}/runs`);
-      console.log(`   Repos:    http://localhost:${PORT}/repos`);
-      console.log(`\n   ℹ️  Start the worker separately: npm run dev:worker\n`);
+      logger.info(`🚀 SimpleCI backend running at http://localhost:${PORT}`);
+      logger.info(`   Health:   http://localhost:${PORT}/health`);
+      logger.info(`   Metrics:  http://localhost:${PORT}/metrics`);
+      logger.info(`   Login:    http://localhost:${PORT}/auth/github`);
+      logger.info(`   Runs API: http://localhost:${PORT}/runs`);
+      logger.info(`   Repos:    http://localhost:${PORT}/repos`);
+      logger.info(`   Start the worker separately: npm run dev:worker`);
     });
   })
   .catch((err) => {
-    console.error('[Startup] Failed to connect to PostgreSQL after retries:', err);
+    logger.error({ err }, 'Failed to connect to PostgreSQL after retries');
     process.exit(1);
   });
