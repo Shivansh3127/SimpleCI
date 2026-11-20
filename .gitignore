@@ -17,3 +17,8 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+
+# Local documentation — for personal use only, not for GitHub
+ARCHITECTURE.md
+HOW_IT_WORKS.md
+CAPSTONE_REPORT.md
