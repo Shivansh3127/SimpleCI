@@ -110,6 +110,7 @@ services:
     name: simpleci-redis
     plan: free
     maxmemoryPolicy: noeviction
+    ipAllowList: []   # allow all Render internal services
 
 databases:
   # ── PostgreSQL ─────────────────────────────────────────────────────
