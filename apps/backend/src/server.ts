@@ -30,6 +30,11 @@ const app = express();
 const PORT = process.env.PORT ?? 3000;
 const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5173';
 
+// ─── Trust proxy (required for Render/Heroku/etc.) ────────────
+// Render sits behind a reverse proxy. Without this, secure cookies
+// and req.ip won't work correctly.
+app.set('trust proxy', 1);
+
 // ─── Middleware ───────────────────────────────────────────────
 // CORS — allow the React frontend with credentials (cookies)
 app.use(cors({
