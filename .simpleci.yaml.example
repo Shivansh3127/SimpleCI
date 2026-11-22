@@ -1,0 +1,45 @@
+# .simpleci.yaml — Level 5 example showing all new features
+#
+# 5.1 Multi-language: use any Docker image
+# 5.2 Artifacts: upload dist/ to MinIO after success
+# 5.3 Matrix: run against Node 18, 20, and 22 in parallel
+# 5.4 Secrets: NPM_TOKEN is set via the Settings UI (AES-256-GCM encrypted)
+# 5.6 Notifications: set via Settings UI (Notify URL field)
+
+pipeline:
+  name: "My Node App"
+
+  # 5.1 — Use any Docker image (default: node:20-alpine)
+  image: "node:20-alpine"
+
+  # Only run CI on these branches
+  branches:
+    - main
+    - develop
+
+  # 5.3 — Matrix: runs 3 parallel pipelines (node=18, node=20, node=22)
+  # Reference the value in steps as ${{ matrix.node }}
+  matrix:
+    node:
+      - 18
+      - 20
+      - 22
+
+  # 5.2 — Upload these paths to MinIO after a successful run
+  artifacts:
+    - dist/
+    - coverage/
+
+  steps:
+    - name: Use Node ${{ matrix.node }}
+      run: "node --version"
+
+    - name: Install dependencies
+      run: "npm ci"
+      # NPM_TOKEN is injected automatically from your repo secrets
+
+    - name: Run tests
+      run: "npm test"
+
+    - name: Build
+      run: "npm run build"
