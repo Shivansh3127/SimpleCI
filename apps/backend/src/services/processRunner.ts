@@ -167,62 +167,75 @@ export async function runPipelineProcess(
     await emitLog('\n[SimpleCI] ✅ Pipeline PASSED');
 
     // ── CD: GitHub Pages auto-deploy ────────────────────────────
-    if (deployConfig && deployConfig.provider === 'github-pages' && githubToken && repoOwner && repoSlug) {
-      try {
-        await emitLog('\n[SimpleCI] 🚀 Deploying to GitHub Pages...');
-        const deployDir       = deployConfig.directory ?? '.';
-        const deploySourceDir = deployDir === '.'
-          ? workDir!
-          : path.join(workDir!, deployDir);
-        const deployBranch = deployConfig.branch ?? 'gh-pages';
+    if (deployConfig && deployConfig.provider === 'github-pages') {
+      // Log why we're skipping if we are
+      if (!githubToken) {
+        await emitLog('\n[SimpleCI] ⚠️  CD skipped: No GitHub token found (repo must be connected via OAuth login)');
+      } else if (!repoOwner || !repoSlug) {
+        await emitLog('\n[SimpleCI] ⚠️  CD skipped: Could not determine repo owner/name');
+      } else {
+        try {
+          await emitLog('\n[SimpleCI] 🚀 Deploying to GitHub Pages...');
+          const deployDir       = deployConfig.directory ?? '.';
+          const deploySourceDir = deployDir === '.'
+            ? workDir!
+            : path.join(workDir!, deployDir);
+          const deployBranch = deployConfig.branch ?? 'gh-pages';
 
-        if (!fs.existsSync(deploySourceDir)) {
-          await emitLog(`[SimpleCI] ⚠️  Deploy directory "${deployDir}" not found — skipping deploy`);
-        } else {
-          const deployWorkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'simpleci-deploy-'));
+          await emitLog(`[SimpleCI]   Source dir: ${deploySourceDir}`);
+          await emitLog(`[SimpleCI]   Target branch: ${deployBranch}`);
+          await emitLog(`[SimpleCI]   Repo: ${repoOwner}/${repoSlug}`);
 
-          // Copy deploy files
-          await execAsync(
-            process.platform === 'win32'
-              ? `xcopy "${deploySourceDir}\\*" "${deployWorkDir}\\" /E /I /Q /Y`
-              : `cp -r "${deploySourceDir}/." "${deployWorkDir}/"`,
-            { timeout: 30_000 },
-          );
+          if (!fs.existsSync(deploySourceDir)) {
+            await emitLog(`[SimpleCI] ⚠️  Deploy directory "${deployDir}" not found — skipping deploy`);
+          } else {
+            const deployWorkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'simpleci-deploy-'));
 
-          // Remove .git if copied from source
-          const copiedGit = path.join(deployWorkDir, '.git');
-          if (fs.existsSync(copiedGit)) {
-            fs.rmSync(copiedGit, { recursive: true, force: true });
+            // Copy deploy files
+            await execAsync(
+              process.platform === 'win32'
+                ? `xcopy "${deploySourceDir}\\*" "${deployWorkDir}\\" /E /I /Q /Y`
+                : `cp -r "${deploySourceDir}/." "${deployWorkDir}/"`,
+              { timeout: 30_000 },
+            );
+            await emitLog(`[SimpleCI]   Files copied to deploy workspace ✓`);
+
+            // Remove .git if copied from source
+            const copiedGit = path.join(deployWorkDir, '.git');
+            if (fs.existsSync(copiedGit)) {
+              fs.rmSync(copiedGit, { recursive: true, force: true });
+            }
+
+            // Remove .simpleci.yaml from deploy (not needed on gh-pages)
+            const copiedYaml = path.join(deployWorkDir, '.simpleci.yaml');
+            if (fs.existsSync(copiedYaml)) fs.unlinkSync(copiedYaml);
+
+            // Git init, commit, force push
+            const authUrl = `https://x-access-token:${githubToken}@github.com/${repoOwner}/${repoSlug}.git`;
+            const gitCmds = [
+              `git init`,
+              `git checkout -b ${deployBranch}`,
+              `git config user.email "simpleci@deploy.bot"`,
+              `git config user.name "SimpleCI Deploy Bot"`,
+              `git add -A`,
+              // allow-empty in case nothing changed
+              `git diff --cached --quiet && git commit --allow-empty -m "deploy: SimpleCI auto-deploy [run ${runId}]" || git commit -m "deploy: SimpleCI auto-deploy [run ${runId}]"`,
+              `git push --force "${authUrl}" ${deployBranch}`,
+            ].join(' && ');
+
+            await execAsync(gitCmds, { cwd: deployWorkDir, timeout: 60_000 });
+
+            await emitLog(`[SimpleCI] ✅ Deployed to GitHub Pages (${deployBranch} branch)`);
+            await emitLog(`[SimpleCI] 🌐 Site: https://${repoOwner}.github.io/${repoSlug}/`);
+
+            // Cleanup deploy work dir
+            try { fs.rmSync(deployWorkDir, { recursive: true, force: true }); } catch {}
           }
-
-          // Remove .simpleci.yaml from deploy (not needed on gh-pages)
-          const copiedYaml = path.join(deployWorkDir, '.simpleci.yaml');
-          if (fs.existsSync(copiedYaml)) fs.unlinkSync(copiedYaml);
-
-          // Git init, commit, force push
-          const authUrl = `https://x-access-token:${githubToken}@github.com/${repoOwner}/${repoSlug}.git`;
-          const gitCmds = [
-            `git init`,
-            `git checkout -b ${deployBranch}`,
-            `git config user.email "simpleci@deploy.bot"`,
-            `git config user.name "SimpleCI Deploy Bot"`,
-            `git add -A`,
-            `git commit -m "deploy: SimpleCI auto-deploy [run ${runId}]"`,
-            `git push --force "${authUrl}" ${deployBranch}`,
-          ].join(' && ');
-
-          await execAsync(gitCmds, { cwd: deployWorkDir, timeout: 60_000 });
-
-          await emitLog(`[SimpleCI] ✅ Deployed to GitHub Pages (${deployBranch} branch)`);
-          await emitLog(`[SimpleCI] 🌐 Site: https://${repoOwner}.github.io/${repoSlug}/`);
-
-          // Cleanup deploy work dir
-          try { fs.rmSync(deployWorkDir, { recursive: true, force: true }); } catch {}
+        } catch (deployErr) {
+          const deployMsg = deployErr instanceof Error ? deployErr.message : String(deployErr);
+          await emitLog(`[SimpleCI] ⚠️  Deploy failed: ${deployMsg}`);
+          await emitLog('[SimpleCI] ℹ️  CI passed but deploy failed — marking as SUCCESS (deploy is best-effort)');
         }
-      } catch (deployErr) {
-        const deployMsg = deployErr instanceof Error ? deployErr.message : String(deployErr);
-        await emitLog(`[SimpleCI] ⚠️  Deploy failed: ${deployMsg}`);
-        await emitLog('[SimpleCI] ℹ️  CI passed but deploy failed — marking as SUCCESS (deploy is best-effort)');
       }
     }
 
