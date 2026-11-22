@@ -55,9 +55,10 @@ app.use(session({
   saveUninitialized: false,
   name: 'simpleci.sid',
   cookie: {
-    httpOnly: true,              // JS cannot read the cookie
-    secure: process.env.NODE_ENV === 'production', // HTTPS only in prod
-    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', // 'none' required for cross-origin on Render
+    maxAge: 7 * 24 * 60 * 60 * 1000,
   },
 }));
 
