@@ -22,3 +22,6 @@ npm-debug.log*
 ARCHITECTURE.md
 HOW_IT_WORKS.md
 CAPSTONE_REPORT.md
+
+# Level 5.2: Local artifact storage directory
+artifacts/
