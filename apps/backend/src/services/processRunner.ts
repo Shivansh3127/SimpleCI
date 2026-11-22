@@ -6,7 +6,7 @@ import path from 'path';
 import os from 'os';
 import { WebSocketServer } from 'ws';
 import prisma from '../db/prisma.js';
-import { PipelineStep, type DeployConfig } from './pipelineParser.js';
+import { PipelineStep, type DeployConfig, parsePipelineConfig, getDeployConfig } from './pipelineParser.js';
 import { childLogger } from '../lib/logger.js';
 import { sendNotification } from './notifyService.js';
 
@@ -53,27 +53,31 @@ async function postCommitStatus(
 }
 
 export async function runPipelineProcess(
-  runId:         string,
-  repoUrl:       string,
-  steps:         PipelineStep[],
-  wss:           WebSocketServer,
-  githubToken?:  string | null,
-  repoOwner?:    string | null,
-  repoSlug?:     string | null,
-  commitSha?:    string | null,
-  dockerImage?:  string,
-  artifactPaths?: string[],
-  matrixLabel?:  string | null,
-  secrets?:      Record<string, string>,
-  notifyUrl?:    string | null,
-  repoName?:     string,
-  branch?:       string,
-  deployConfig?: DeployConfig | null,
+  runId:              string,
+  repoUrl:            string,
+  stepsParam:         PipelineStep[],
+  wss:                WebSocketServer,
+  githubToken?:       string | null,
+  repoOwner?:         string | null,
+  repoSlug?:          string | null,
+  commitSha?:         string | null,
+  dockerImage?:       string,
+  artifactPaths?:     string[],
+  matrixLabel?:       string | null,
+  secrets?:           Record<string, string>,
+  notifyUrl?:         string | null,
+  repoName?:          string,
+  branch?:            string,
+  deployConfigParam?: DeployConfig | null,
 ): Promise<void> {
   const log     = childLogger({ runId, repo: repoUrl });
   const startMs = Date.now();
   let   finalStatus: 'SUCCESS' | 'FAILED' | 'CANCELLED' = 'FAILED';
   let   workDir: string | null = null;
+
+  // Mutable copies — may be overridden after reading .simpleci.yaml from cloned repo
+  let steps        = stepsParam;
+  let deployConfig = deployConfigParam;
 
   const sanitize = (raw: string) =>
     raw.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\x00/g, '').trimEnd();
@@ -103,7 +107,6 @@ export async function runPipelineProcess(
     await emitLog(`[SimpleCI] Starting pipeline${matrixTag} for run: ${runId}`);
     await emitLog(`[SimpleCI] Mode:  process (no Docker)`);
     await emitLog(`[SimpleCI] Repo:  ${repoUrl}`);
-    await emitLog(`[SimpleCI] Steps: ${steps.map((s) => s.name).join(' → ')}`);
     await emitLog('');
 
     // ── Clone repo ────────────────────────────────────────────────
@@ -113,6 +116,28 @@ export async function runPipelineProcess(
     const cloneOut = await execAsync(`git clone --depth 1 ${repoUrl} ${workDir}`, { timeout: 60_000 });
     if (cloneOut.stdout) await emitLog(cloneOut.stdout);
     await emitLog(`[SimpleCI] Clone complete ✓`);
+
+    // ── Re-read .simpleci.yaml from cloned repo (most reliable source) ──
+    // The webhook clone can fail on slow networks; reading from the already-cloned
+    // workDir guarantees we always use the correct steps and deploy config.
+    try {
+      const liveConfig = parsePipelineConfig(workDir);
+      if (liveConfig?.pipeline?.steps?.length) {
+        steps = liveConfig.pipeline.steps;
+        await emitLog(`[SimpleCI] ✓ Config loaded from .simpleci.yaml (${steps.length} steps)`);
+      }
+      // Always re-read deploy config from live repo (even if steps were already correct)
+      const liveDeployConfig = getDeployConfig(liveConfig);
+      if (liveDeployConfig) {
+        deployConfig = liveDeployConfig;
+        await emitLog(`[SimpleCI] ✓ Deploy config: provider=${liveDeployConfig.provider}, branch=${liveDeployConfig.branch ?? 'gh-pages'}`);
+      }
+    } catch (configErr) {
+      await emitLog(`[SimpleCI] ⚠️  Could not read .simpleci.yaml — using steps from queue`);
+    }
+
+    await emitLog(`[SimpleCI] Steps: ${steps.map((s) => s.name).join(' → ')}`);
+    await emitLog('');
 
     // Set secrets as env vars
     const env: Record<string, string> = {
