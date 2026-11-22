@@ -1,69 +1,65 @@
 /**
  * artifactService.ts — Level 5.2
  *
- * Uploads build artifacts to MinIO (S3-compatible object storage).
- * MinIO runs as a Docker container alongside the other services.
+ * Local filesystem artifact storage.
+ * Artifacts are stored under ARTIFACTS_DIR (default: <project root>/artifacts/).
+ * The backend serves them via GET /runs/:runId/artifacts (pre-signed URL = direct path).
  *
- * Artifacts are tarred inside the pipeline container, extracted on the host,
- * then streamed to MinIO via the AWS S3 SDK (compatible with MinIO).
+ * This is a self-contained, zero-dependency implementation — no MinIO/S3 needed.
+ * The interface is identical to what an S3 implementation would expose, so it can
+ * be swapped to MinIO/S3 later by just replacing this file.
  *
- * Bucket: simpleci-artifacts
- * Key pattern: runs/<runId>/<filename>
+ * Directory structure:
+ *   artifacts/
+ *     runs/
+ *       <runId>/
+ *         artifact-<timestamp>.tar
  */
-import { S3Client, PutObjectCommand, GetObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import fs from 'fs';
+import fs   from 'fs';
 import path from 'path';
 
-export const s3 = new S3Client({
-  endpoint:        process.env.MINIO_ENDPOINT ?? 'http://localhost:9000',
-  region:          'us-east-1',  // MinIO ignores region but SDK requires it
-  credentials: {
-    accessKeyId:     process.env.MINIO_ACCESS_KEY     ?? 'simpleci',
-    secretAccessKey: process.env.MINIO_SECRET_KEY     ?? 'simpleci123',
-  },
-  forcePathStyle: true, // required for MinIO
-});
+// Resolve artifacts dir relative to the project root (two levels up from src/)
+const ARTIFACTS_DIR = process.env.ARTIFACTS_DIR
+  ?? path.resolve(process.cwd(), '..', '..', 'artifacts');
 
-export const ARTIFACT_BUCKET = 'simpleci-artifacts';
+/** Ensure the directory for a run's artifacts exists. */
+function ensureRunDir(runId: string): string {
+  const dir = path.join(ARTIFACTS_DIR, 'runs', runId);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
 
 /**
- * Upload a local file to MinIO.
- * Returns the S3 key (e.g. "runs/<runId>/<filename>").
+ * "Upload" (copy) a local file into the artifact store.
+ * Returns a key string — in this implementation it's the relative path from ARTIFACTS_DIR.
  */
 export async function uploadArtifact(
   runId:     string,
   localPath: string,
 ): Promise<string> {
+  const runDir  = ensureRunDir(runId);
   const filename = path.basename(localPath);
-  const key      = `runs/${runId}/${filename}`;
-  const body     = fs.createReadStream(localPath);
+  const dest    = path.join(runDir, filename);
 
-  await s3.send(new PutObjectCommand({
-    Bucket:      ARTIFACT_BUCKET,
-    Key:         key,
-    Body:        body,
-    ContentType: 'application/octet-stream',
-  }));
+  fs.copyFileSync(localPath, dest);
 
-  return key;
+  // Key is relative: "runs/<runId>/<filename>"
+  return `runs/${runId}/${filename}`;
 }
 
 /**
- * Generate a pre-signed download URL valid for 1 hour.
+ * Returns the absolute path of an artifact from its key.
+ * Used by the artifacts API to serve the file.
  */
-export async function getArtifactUrl(key: string): Promise<string> {
-  const cmd = new GetObjectCommand({ Bucket: ARTIFACT_BUCKET, Key: key });
-  return getSignedUrl(s3, cmd, { expiresIn: 3600 });
+export function getArtifactPath(key: string): string {
+  return path.join(ARTIFACTS_DIR, key);
 }
 
 /**
  * List all artifact keys for a run.
  */
 export async function listArtifacts(runId: string): Promise<string[]> {
-  const res = await s3.send(new ListObjectsV2Command({
-    Bucket: ARTIFACT_BUCKET,
-    Prefix: `runs/${runId}/`,
-  }));
-  return (res.Contents ?? []).map((obj) => obj.Key!).filter(Boolean);
+  const runDir = path.join(ARTIFACTS_DIR, 'runs', runId);
+  if (!fs.existsSync(runDir)) return [];
+  return fs.readdirSync(runDir).map((f) => `runs/${runId}/${f}`);
 }

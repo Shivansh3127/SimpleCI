@@ -1,17 +1,20 @@
 /**
  * artifacts.ts — Level 5.2
- * API route to get pre-signed artifact download URLs for a run.
+ * Serves build artifacts stored on the local filesystem.
  *
- * GET /runs/:runId/artifacts  — returns presigned URLs for all artifacts in a run
+ * GET  /runs/:runId/artifacts          — list artifacts for a run
+ * GET  /runs/:runId/artifacts/download — stream a specific artifact file
  */
 import { Router, Request, Response } from 'express';
+import path from 'path';
 import prisma from '../db/prisma.js';
 import { requireAuth } from '../middleware/requireAuth.js';
-import { getArtifactUrl } from '../services/artifactService.js';
+import { getArtifactPath, listArtifacts } from '../services/artifactService.js';
 
 const router = Router({ mergeParams: true });
 router.use(requireAuth);
 
+// GET /runs/:runId/artifacts — list all artifacts for this run
 router.get('/', async (req: Request, res: Response) => {
   const run = await prisma.run.findUnique({
     where:  { id: req.params.runId },
@@ -29,22 +32,43 @@ router.get('/', async (req: Request, res: Response) => {
   }
 
   let keys: string[] = [];
-  try {
-    keys = JSON.parse(run.artifactKeys);
-  } catch {
-    res.json({ artifacts: [] });
+  try { keys = JSON.parse(run.artifactKeys); } catch { keys = []; }
+
+  const API = process.env.BACKEND_URL ?? `http://localhost:${process.env.PORT ?? 3000}`;
+
+  const artifacts = keys.map((key) => ({
+    key,
+    filename: key.split('/').pop(),
+    // Direct download URL — the backend streams the file
+    url: `${API}/runs/${req.params.runId}/artifacts/download?key=${encodeURIComponent(key)}`,
+  }));
+
+  res.json({ artifacts });
+});
+
+// GET /runs/:runId/artifacts/download?key=runs/<runId>/<file>
+router.get('/download', async (req: Request, res: Response) => {
+  const { key } = req.query;
+  if (!key || typeof key !== 'string') {
+    res.status(400).json({ error: 'Missing key param' });
     return;
   }
 
-  const artifacts = await Promise.all(
-    keys.map(async (key) => ({
-      key,
-      filename: key.split('/').pop(),
-      url:      await getArtifactUrl(key),
-    }))
-  );
+  // Security: prevent path traversal — key must start with "runs/<runId>/"
+  const runId = req.params.runId;
+  if (!key.startsWith(`runs/${runId}/`)) {
+    res.status(403).json({ error: 'Access denied' });
+    return;
+  }
 
-  res.json({ artifacts });
+  const filePath = getArtifactPath(key);
+  const filename = path.basename(filePath);
+
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.sendFile(filePath, { root: '/' }, (err) => {
+    if (err) res.status(404).json({ error: 'Artifact not found' });
+  });
 });
 
 export default router;

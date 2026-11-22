@@ -16,8 +16,6 @@
     "db:studio": "prisma studio"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1175.0",
-    "@aws-sdk/s3-request-presigner": "^3.1175.0",
     "@opentelemetry/auto-instrumentations-node": "^0.83.1",
     "@opentelemetry/exporter-trace-otlp-http": "^0.301.2",
     "@opentelemetry/resources": "^3.1.1",
