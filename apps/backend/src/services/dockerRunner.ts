@@ -9,6 +9,7 @@ import { PipelineStep } from './pipelineParser.js';
 import { childLogger } from '../lib/logger.js';
 import { uploadArtifact } from './artifactService.js';
 import { sendNotification } from './notifyService.js';
+import { runPipelineProcess } from './processRunner.js';
 
 const docker = new Docker();
 
@@ -84,6 +85,14 @@ export async function runPipeline(
   repoName?:     string,
   branch?:       string,
 ): Promise<void> {
+  // On Render (or any env without Docker), use the process-based runner
+  if (process.env.RUNNER_MODE === 'process') {
+    return runPipelineProcess(
+      runId, repoUrl, steps, wss, githubToken, repoOwner, repoSlug,
+      commitSha, dockerImage, artifactPaths, matrixLabel, secrets,
+      notifyUrl, repoName, branch,
+    );
+  }
   const log       = childLogger({ runId, repo: repoUrl });
   const IMAGE     = dockerImage ?? 'node:20-alpine';
   const startMs   = Date.now();

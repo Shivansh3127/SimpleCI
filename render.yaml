@@ -1,0 +1,119 @@
+services:
+  # ── Backend API (Web Service) ──────────────────────────────────────
+  - type: web
+    name: simpleci-backend
+    runtime: docker
+    dockerfilePath: ./apps/backend/Dockerfile
+    dockerContext: ./apps/backend
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: RUNNER_MODE
+        value: process
+      - key: DATABASE_URL
+        fromDatabase:
+          name: simpleci-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: simpleci-redis
+          type: redis
+          property: connectionString
+      - key: FRONTEND_URL
+        sync: false   # set to your frontend Render URL after deploy
+      - key: GITHUB_CLIENT_ID
+        sync: false   # paste from GitHub OAuth App settings
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_CALLBACK_URL
+        sync: false   # https://<your-backend>.onrender.com/auth/github/callback
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: GITHUB_WEBHOOK_SECRET
+        sync: false
+      - key: SECRETS_ENCRYPTION_KEY
+        generateValue: true
+      - key: LOG_LEVEL
+        value: info
+      - key: OTEL_ENABLED
+        value: "false"
+      - key: PIPELINE_CONCURRENCY
+        value: 2
+
+  # ── Background Worker ──────────────────────────────────────────────
+  - type: worker
+    name: simpleci-worker
+    runtime: docker
+    dockerfilePath: ./apps/backend/Dockerfile.worker
+    dockerContext: ./apps/backend
+    plan: free
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: RUNNER_MODE
+        value: process
+      - key: WORKER_WS_PORT
+        value: 3001
+      - key: DATABASE_URL
+        fromDatabase:
+          name: simpleci-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: simpleci-redis
+          type: redis
+          property: connectionString
+      - key: SECRETS_ENCRYPTION_KEY
+        fromService:
+          name: simpleci-backend
+          type: web
+          envVarKey: SECRETS_ENCRYPTION_KEY
+      - key: FRONTEND_URL
+        sync: false
+      - key: LOG_LEVEL
+        value: info
+      - key: OTEL_ENABLED
+        value: "false"
+      - key: PIPELINE_CONCURRENCY
+        value: 2
+
+  # ── Frontend (Static Site) ─────────────────────────────────────────
+  - type: web
+    name: simpleci-frontend
+    runtime: static
+    buildCommand: npm install && npm run build
+    rootDir: apps/frontend
+    staticPublishPath: dist
+    pullRequestPreviewsEnabled: true
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_API_BASE_URL
+        fromService:
+          name: simpleci-backend
+          type: web
+          envVarKey: RENDER_EXTERNAL_URL
+      - key: VITE_WS_URL
+        fromService:
+          name: simpleci-backend
+          type: web
+          envVarKey: RENDER_EXTERNAL_URL
+
+  # ── Redis ──────────────────────────────────────────────────────────
+  - type: redis
+    name: simpleci-redis
+    plan: free
+    maxmemoryPolicy: noeviction
+
+databases:
+  # ── PostgreSQL ─────────────────────────────────────────────────────
+  - name: simpleci-postgres
+    plan: free
+    databaseName: simpleci_db
+    user: simpleci

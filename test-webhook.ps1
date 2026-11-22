@@ -1,11 +1,21 @@
-﻿# ============================================================
+# ============================================================
 #  SimpleCI — Fire a test webhook (simulates GitHub push)
 #  Run from: d:\Projects\SimpleCI
 #  Usage:    .\test-webhook.ps1
 # ============================================================
 
 $BACKEND = "http://localhost:3000"
-$SECRET  = ""   # Must match GITHUB_WEBHOOK_SECRET in .env (empty = default)
+
+# Read GITHUB_WEBHOOK_SECRET from .env automatically
+$envFile = "d:\Projects\SimpleCI\apps\backend\.env"
+$SECRET = ""
+foreach ($line in (Get-Content $envFile)) {
+    if ($line -match 'GITHUB_WEBHOOK_SECRET="([^"]+)"') {
+        $SECRET = $Matches[1]
+        break
+    }
+}
+Write-Host "Using secret from .env: $($SECRET.Substring(0, [Math]::Min(6, $SECRET.Length)))..." -ForegroundColor DarkGray
 
 # GitHub push event payload
 $PAYLOAD = @{
