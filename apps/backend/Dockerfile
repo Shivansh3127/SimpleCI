@@ -1,37 +1,36 @@
 # ─────────────────────────────────────────────────────────────
 #  SimpleCI Backend Dockerfile
-#  Multi-stage build: builder → production image
+#  Uses node:20-slim (Debian) — avoids Alpine/musl Prisma issues
 # ─────────────────────────────────────────────────────────────
-FROM node:20-alpine AS builder
+FROM node:20-slim AS builder
 
 WORKDIR /app
 
-# Install dependencies
+# Install OpenSSL (required by Prisma schema engine)
+RUN apt-get update -qq && apt-get install -y -qq openssl && rm -rf /var/lib/apt/lists/*
+
 COPY package*.json ./
 RUN npm ci
 
-# Copy source & build TypeScript
 COPY . .
+RUN npx prisma generate
 RUN npm run build
 
 # ─────────────────────────────────────────────────────────────
-FROM node:20-alpine AS runner
+FROM node:20-slim AS runner
 
-# Install git (needed by process runner to clone repos)
-RUN apk add --no-cache git
+# Install git (process runner clones repos) + OpenSSL (Prisma)
+RUN apt-get update -qq && apt-get install -y -qq git openssl && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Production deps only
 COPY package*.json ./
 RUN npm ci --omit=dev
 
-# Copy compiled output + prisma schema
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY prisma ./prisma
 
 EXPOSE 3000
 
-# Run migrations then start the server
 CMD ["sh", "-c", "npx prisma migrate deploy && node dist/server.js"]
