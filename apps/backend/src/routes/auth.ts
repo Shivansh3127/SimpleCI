@@ -9,7 +9,7 @@ const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5173';
  * GET /auth/github
  * Redirects the user to GitHub's OAuth authorization page.
  */
-router.get('/github', passport.authenticate('github', { scope: ['user:email', 'repo:status'] }));
+router.get('/github', passport.authenticate('github', { scope: ['user:email', 'repo:status', 'public_repo'] }));
 
 /**
  * GET /auth/github/callback
