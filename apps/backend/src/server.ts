@@ -24,6 +24,7 @@ import { registry, queueDepthGauge } from './lib/metrics.js';
 import { httpMetricsMiddleware } from './middleware/httpMetrics.js';
 import { pipelineQueue } from './queue/pipelineQueue.js';
 import logger from './lib/logger.js';
+import { startInlineWorker } from './lib/inlineWorker.js';
 
 const app = express();
 const PORT = process.env.PORT ?? 3000;
@@ -130,6 +131,11 @@ connectWithRetry()
       logger.info(`   Start the worker separately: npm run dev:worker`);
       logger.info(`   MinIO:    http://localhost:9001`);
     });
+
+    // Start inline worker when INLINE_WORKER=true (e.g. Render free tier)
+    if (process.env.INLINE_WORKER === 'true') {
+      startInlineWorker(wss);
+    }
   })
   .catch((err) => {
     logger.error({ err }, 'Failed to connect to PostgreSQL after retries');
