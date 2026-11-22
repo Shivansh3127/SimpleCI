@@ -9,10 +9,14 @@ import {
   parsePipelineConfig,
   getAllowedBranches,
   isBranchAllowed,
+  getDockerImage,
+  getArtifactPaths,
+  expandMatrix,
 } from '../services/pipelineParser.js';
 import { pipelineQueue } from '../queue/pipelineQueue.js';
 import prisma from '../db/prisma.js';
 import { WebSocketServer } from 'ws';
+import { decryptSecret } from '../services/secretsService.js';
 
 export function createWebhookRouter(wss: WebSocketServer): Router {
   const router = Router();
@@ -20,16 +24,14 @@ export function createWebhookRouter(wss: WebSocketServer): Router {
   /**
    * POST /webhook/github
    *
-   * Level 3 changes:
-   * - Instead of one global GITHUB_WEBHOOK_SECRET in .env, each registered
-   *   repo has its own unique secret stored in the repositories table.
-   * - We identify the repo from the payload, look up its secret, then verify.
-   * - Run is linked to its Repository row (repositoryId FK).
-   * - Falls back to .env secret for backwards compatibility with unregistered repos.
+   * Level 5 changes:
+   * - 5.1: Passes dockerImage from .simpleci.yaml to job
+   * - 5.2: Passes artifactPaths to job
+   * - 5.3: If matrix is defined, creates N parallel runs (one per matrix value)
+   * - 5.4: Loads + decrypts per-repo secrets, passes them to job
+   * - 5.6: Passes notifyUrl from repo settings
    */
   router.post('/github', async (req: Request, res: Response) => {
-    // Parse payload first (we need repo URL to look up the per-repo secret)
-    // We parse BEFORE verifying — this is safe because we still verify after.
     let payload: Record<string, unknown>;
     try {
       payload = JSON.parse((req.body as Buffer).toString('utf-8'));
@@ -38,15 +40,14 @@ export function createWebhookRouter(wss: WebSocketServer): Router {
       return;
     }
 
-    // Only handle push events
     const event = req.headers['x-github-event'];
     if (event !== 'push') {
       res.status(200).json({ message: `Ignoring event: ${event}` });
       return;
     }
 
-    const ref = payload.ref as string | undefined;
-    const repo = payload.repository as Record<string, unknown> | undefined;
+    const ref        = payload.ref as string | undefined;
+    const repo       = payload.repository as Record<string, unknown> | undefined;
     const headCommit = payload.head_commit as Record<string, unknown> | undefined;
 
     if (!ref || !repo || !headCommit) {
@@ -56,16 +57,15 @@ export function createWebhookRouter(wss: WebSocketServer): Router {
 
     const repoUrl = repo.clone_url as string;
 
-    // ── Look up the registered repo to get its unique webhook secret ──
-    // Falls back to the global .env secret for unregistered repos.
     const registeredRepo = await prisma.repository.findUnique({
-      where: { repoUrl },
-      include: { user: { select: { accessToken: true, username: true } } },
+      where:   { repoUrl },
+      include: {
+        user:    { select: { accessToken: true, username: true } },
+        secrets: true,
+      },
     });
 
     const secret = registeredRepo?.webhookSecret ?? process.env.GITHUB_WEBHOOK_SECRET ?? '';
-
-    // ── Verify HMAC-SHA256 signature with the correct secret ──────
     const isValid = verifyGithubWebhook(req, secret);
     if (!isValid) {
       console.warn('[Webhook] ❌ Invalid signature — rejecting request');
@@ -80,15 +80,18 @@ export function createWebhookRouter(wss: WebSocketServer): Router {
 
     console.log(`[Webhook] ✅ Push from ${repoName}@${branch} (${commitSha})`);
 
-    // ── Read .simpleci.yaml for branch filtering + steps ──────────
-    let configSteps = getDefaultSteps();
+    // ── Read .simpleci.yaml ───────────────────────────────────────
+    let configSteps   = getDefaultSteps();
+    let dockerImage   = 'node:20-alpine';
+    let artifactPaths: string[] = [];
+    let matrixEntries: Array<Record<string, string>> | null = null;
     let tempDir: string | null = null;
 
     try {
       tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'simpleci-'));
       execSync(`git clone --depth 1 ${repoUrl} ${tempDir}`, { stdio: 'ignore', timeout: 30_000 });
 
-      const config = parsePipelineConfig(tempDir);
+      const config      = parsePipelineConfig(tempDir);
       const allowedBranches = getAllowedBranches(config);
 
       if (!isBranchAllowed(branch, allowedBranches)) {
@@ -97,9 +100,10 @@ export function createWebhookRouter(wss: WebSocketServer): Router {
         return;
       }
 
-      if (config?.pipeline?.steps?.length) {
-        configSteps = config.pipeline.steps;
-      }
+      if (config?.pipeline?.steps?.length) configSteps = config.pipeline.steps;
+      dockerImage   = getDockerImage(config);
+      artifactPaths = getArtifactPaths(config);
+      matrixEntries = expandMatrix(config);         // Level 5.3
     } catch (err) {
       console.warn('[Webhook] ⚠️  Could not clone repo for config — using defaults:', err);
     } finally {
@@ -108,33 +112,89 @@ export function createWebhookRouter(wss: WebSocketServer): Router {
       }
     }
 
-    // ── Create Run record linked to the registered repo ───────────
-    const run = await prisma.run.create({
-      data: {
-        repositoryId: registeredRepo?.id ?? null,
-        repoName,
+    // ── Level 5.4: Decrypt repo secrets ───────────────────────────
+    const decryptedSecrets: Record<string, string> = {};
+    if (registeredRepo?.secrets) {
+      for (const s of registeredRepo.secrets) {
+        try {
+          decryptedSecrets[s.name] = decryptSecret({
+            encryptedVal: s.encryptedVal,
+            iv:           s.iv,
+            tag:          s.tag,
+          });
+        } catch (err) {
+          console.warn(`[Webhook] Could not decrypt secret "${s.name}":`, err);
+        }
+      }
+    }
+
+    const notifyUrl  = registeredRepo?.notifyUrl ?? null;
+    const fullSha    = headCommit.id as string;
+
+    // ── Level 5.3: Matrix fan-out ──────────────────────────────────
+    // If matrix is defined, create one run per matrix entry.
+    // Otherwise, create a single run as before.
+    const matrixList = matrixEntries ?? [null];
+    const createdRuns: Array<{ runId: string; jobId: string; matrixLabel: string | null }> = [];
+
+    for (const matrixEntry of matrixList) {
+      const matrixLabel = matrixEntry
+        ? Object.entries(matrixEntry).map(([k, v]) => `${k}=${v}`).join(',')
+        : null;
+
+      // Substitute matrix values into step commands
+      // e.g. "node: 20" → replaces ${{ matrix.node }} with 20
+      const resolvedSteps = configSteps.map((step) => ({
+        ...step,
+        run: matrixEntry
+          ? Object.entries(matrixEntry).reduce(
+              (cmd, [k, v]) => cmd.replaceAll(`\${{ matrix.${k} }}`, v),
+              step.run,
+            )
+          : step.run,
+      }));
+
+      const run = await prisma.run.create({
+        data: {
+          repositoryId: registeredRepo?.id ?? null,
+          repoName,
+          repoUrl,
+          branch,
+          commitSha,
+          commitMsg,
+          status:      'QUEUED',
+          matrixLabel,
+          dockerImage,
+        },
+      });
+
+      const job = await pipelineQueue.add('pipeline', {
+        runId:        run.id,
         repoUrl,
+        steps:        resolvedSteps,
+        githubToken:  registeredRepo?.user?.accessToken ?? null,
+        repoOwner:    (repo.owner as any)?.login ?? null,
+        repoSlug:     repo.name as string,
+        commitSha:    fullSha,
+        dockerImage,
+        artifactPaths,
+        matrixLabel,
+        secrets:      decryptedSecrets,
+        notifyUrl,
+        repoName,
         branch,
-        commitSha,
-        commitMsg,
-        status: 'QUEUED',
-      },
-    });
+      });
 
-    // ── Queue the pipeline job ────────────────────────────────────
-    const job = await pipelineQueue.add('pipeline', {
-      runId:       run.id,
-      repoUrl,
-      steps:       configSteps,
-      // Pass the GitHub token so the worker can post commit statuses
-      githubToken: registeredRepo?.user?.accessToken ?? null,
-      repoOwner:   (repo.owner as any)?.login ?? null,
-      repoSlug:    repo.name as string,
-      commitSha:   (headCommit.id as string), // full SHA for status API
-    });
+      createdRuns.push({ runId: run.id, jobId: job.id!, matrixLabel });
+      console.log(`[Webhook] 📥 Queued job ${job.id} for run ${run.id}${matrixLabel ? ` [${matrixLabel}]` : ''}`);
+    }
 
-    console.log(`[Webhook] 📥 Queued job ${job.id} for run ${run.id}`);
-    res.status(202).json({ message: 'Pipeline queued', runId: run.id, jobId: job.id });
+    res.status(202).json({
+      message: matrixList.length > 1
+        ? `${matrixList.length} matrix runs queued`
+        : 'Pipeline queued',
+      runs: createdRuns,
+    });
   });
 
   return router;

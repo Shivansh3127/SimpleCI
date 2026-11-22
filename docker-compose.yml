@@ -119,6 +119,43 @@ services:
       COLLECTOR_OTLP_ENABLED: "true"
     restart: unless-stopped
 
+  # ── Level 5.2: MinIO — S3-compatible artifact storage ─────────
+  # API:         http://localhost:9000  (used by backend SDK)
+  # Console UI:  http://localhost:9001  (admin / simpleci123)
+  minio:
+    image: minio/minio:latest
+    container_name: simpleci-minio
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web console
+    environment:
+      MINIO_ROOT_USER:     simpleci
+      MINIO_ROOT_PASSWORD: simpleci123
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # MinIO bucket init — creates the simpleci-artifacts bucket on first start
+  minio-init:
+    image: minio/mc:latest
+    container_name: simpleci-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 simpleci simpleci123 &&
+        mc mb --ignore-existing local/simpleci-artifacts &&
+        echo 'Bucket ready'
+      "
+    restart: "no"
+
 volumes:
   postgres_data:
     driver: local
@@ -133,4 +170,7 @@ volumes:
   # Level 4: Shared build cache volume — mounted into every pipeline container
   # so npm/pip packages are reused across runs (dramatically speeds up repeat builds)
   simpleci-build-cache:
+    driver: local
+  # Level 5.2: MinIO artifact storage
+  minio_data:
     driver: local

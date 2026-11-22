@@ -4,8 +4,11 @@ import type { RunDetail as RunDetailType, WsMessage } from '../types';
 import StatusBadge from '../components/StatusBadge';
 import Terminal from '../components/Terminal';
 
-const API = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000';
-const WS_URL = import.meta.env.VITE_WS_URL ?? 'ws://localhost:3000';
+const API    = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000';
+const WS_URL = import.meta.env.VITE_WS_URL       ?? 'ws://localhost:3000';
+
+interface Artifact { key: string; filename: string; url: string; }
+
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString('en-IN', {
@@ -23,12 +26,13 @@ function formatDuration(start: string, end: string | null): string {
 
 export default function RunDetail() {
   const { id } = useParams<{ id: string }>();
-  const [run, setRun] = useState<RunDetailType | null>(null);
-  const [liveLogs, setLiveLogs] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [retrying, setRetrying] = useState(false);
+  const [run, setRun]           = useState<RunDetailType | null>(null);
+  const [liveLogs, setLiveLogs]  = useState<string[]>([]);
+  const [loading, setLoading]    = useState(true);
+  const [error, setError]        = useState<string | null>(null);
+  const [retrying, setRetrying]  = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
 
   // Re-run handler
@@ -67,7 +71,7 @@ export default function RunDetail() {
   // Fetch the run + its existing logs from the REST API
   useEffect(() => {
     if (!id) return;
-    fetch(`${API}/runs/${id}`)
+    fetch(`${API}/runs/${id}`, { credentials: 'include' })
       .then((r) => {
         if (!r.ok) throw new Error('Run not found');
         return r.json();
@@ -75,6 +79,13 @@ export default function RunDetail() {
       .then((data: RunDetailType) => {
         setRun(data);
         setLiveLogs(data.logs.map((l) => l.line));
+        // Load artifacts if run is done
+        if (data.status === 'SUCCESS') {
+          fetch(`${API}/runs/${id}/artifacts`, { credentials: 'include' })
+            .then((r) => r.json())
+            .then((d) => setArtifacts(d.artifacts ?? []))
+            .catch(() => {});
+        }
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
@@ -208,12 +219,41 @@ export default function RunDetail() {
               <span className="run-meta-label">Started</span>
               <span className="run-meta-value">{formatDate(run.startedAt)}</span>
             </div>
+            {(run as any).dockerImage && (
+              <div className="run-meta-item">
+                <span className="run-meta-label">Image</span>
+                <code style={{ fontSize: 12, color: 'var(--blue)' }}>{(run as any).dockerImage}</code>
+              </div>
+            )}
+            {(run as any).matrixLabel && (
+              <div className="run-meta-item">
+                <span className="run-meta-label">Matrix</span>
+                <code style={{ fontSize: 12, color: 'var(--yellow, #d29922)' }}>{(run as any).matrixLabel}</code>
+              </div>
+            )}
           </div>
 
           {/* Commit message */}
           <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--border)', color: 'var(--text-muted)', fontSize: 13 }}>
             💬 {run.commitMsg}
           </div>
+
+          {/* Artifacts panel — Level 5.2 */}
+          {artifacts.length > 0 && (
+            <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--border)' }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+                📦 Artifacts
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {artifacts.map((a) => (
+                  <a key={a.key} href={a.url} target="_blank" rel="noreferrer"
+                    style={{ fontSize: 13, color: 'var(--blue)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    ⬇ {a.filename}
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Terminal output */}
           <div style={{ padding: 20 }}>

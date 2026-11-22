@@ -11,11 +11,9 @@ router.use(requireAuth);
 
 // Zod schema — validates the request body when registering a repo
 const RegisterRepoSchema = z.object({
-  repoUrl: z
-    .string()
-    .url('Must be a valid URL')
-    .regex(/github\.com/, 'Must be a GitHub repository URL'),
-  repoName: z.string().min(1, 'Repo name is required').max(100),
+  repoUrl:   z.string().url('Must be a valid URL').regex(/github\.com/, 'Must be a GitHub repository URL'),
+  repoName:  z.string().min(1, 'Repo name is required').max(100),
+  notifyUrl: z.string().url().optional().nullable(),
 });
 
 /**
@@ -52,11 +50,11 @@ router.post('/', async (req: Request, res: Response) => {
     // Validate body with Zod
     const result = RegisterRepoSchema.safeParse(req.body);
     if (!result.success) {
-      res.status(400).json({ error: result.error.errors[0].message });
+      res.status(400).json({ error: result.error.issues[0].message });
       return;
     }
 
-    const { repoUrl, repoName } = result.data;
+    const { repoUrl, repoName, notifyUrl } = result.data;
 
     // Normalize URL: ensure it ends with .git
     const normalizedUrl = repoUrl.endsWith('.git') ? repoUrl : `${repoUrl}.git`;
@@ -69,7 +67,6 @@ router.post('/', async (req: Request, res: Response) => {
     }
 
     // Generate a cryptographically secure unique webhook secret
-    // 32 random bytes = 64 hex chars — same strength as a 256-bit key
     const webhookSecret = crypto.randomBytes(32).toString('hex');
 
     const repo = await prisma.repository.create({
@@ -78,6 +75,7 @@ router.post('/', async (req: Request, res: Response) => {
         repoName,
         repoUrl:       normalizedUrl,
         webhookSecret,
+        notifyUrl:     notifyUrl ?? null,
       },
     });
 
@@ -90,9 +88,29 @@ router.post('/', async (req: Request, res: Response) => {
 });
 
 /**
+ * PATCH /repos/:id
+ * Update notify URL (Level 5.6).
+ */
+router.patch('/:id', async (req: Request, res: Response) => {
+  try {
+    const user = req.user as any;
+    const repo = await prisma.repository.findUnique({ where: { id: req.params.id } });
+    if (!repo) { res.status(404).json({ error: 'Repository not found' }); return; }
+    if (repo.userId !== user.id) { res.status(403).json({ error: 'You do not own this repository' }); return; }
+
+    const { notifyUrl } = req.body;
+    const updated = await prisma.repository.update({
+      where: { id: req.params.id },
+      data:  { notifyUrl: notifyUrl ?? null },
+    });
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update repository' });
+  }
+});
+
+/**
  * DELETE /repos/:id
- * Removes a registered repo (and cascades to delete all its runs + logs).
- * Only the owner can delete their own repo.
  */
 router.delete('/:id', async (req: Request, res: Response) => {
   try {

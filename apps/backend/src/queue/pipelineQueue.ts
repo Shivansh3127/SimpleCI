@@ -6,44 +6,42 @@ import { redisConnection } from './redisConnection.js';
  * This is serialized to Redis and read back by the worker.
  */
 export interface PipelineJobData {
-  runId: string;
-  repoUrl: string;
-  steps: Array<{ name: string; run: string }>;
+  runId:        string;
+  repoUrl:      string;
+  steps:        Array<{ name: string; run: string }>;
   // Level 3: GitHub Commit Status API
-  githubToken: string | null;  // user's OAuth token
-  repoOwner:   string | null;  // e.g. "Shivansh3127"
-  repoSlug:    string | null;  // e.g. "SimpleCI"
-  commitSha:   string | null;  // full 40-char SHA
+  githubToken:  string | null;
+  repoOwner:    string | null;
+  repoSlug:     string | null;
+  commitSha:    string | null;
+  // Level 5.1: Docker image
+  dockerImage:  string;
+  // Level 5.2: artifact paths to collect after run
+  artifactPaths: string[];
+  // Level 5.3: matrix label e.g. "node=20"
+  matrixLabel:  string | null;
+  // Level 5.4: decrypted secrets to inject as env vars
+  secrets:      Record<string, string>;
+  // Level 5.6: notification webhook URL
+  notifyUrl:    string | null;
+  // For notifications
+  repoName:     string;
+  branch:       string;
 }
 
-/**
- * The single pipeline queue.
- * - Producer (webhook.ts) adds jobs here.
- * - Consumer (worker.ts) picks them up.
- *
- * BullMQ stores jobs in Redis so they survive server restarts.
- * If the worker crashes mid-job, BullMQ automatically retries it.
- */
 export const pipelineQueue = new Queue<PipelineJobData>('pipelines', {
   connection: redisConnection,
   defaultJobOptions: {
-    // Retry up to 3 times on failure, with exponential backoff:
-    // attempt 1 → wait 5s → attempt 2 → wait 10s → attempt 3 → wait 20s
     attempts: 3,
     backoff: {
-      type: 'exponential',
+      type:  'exponential',
       delay: 5_000,
     },
-    // Keep last 100 completed + 200 failed jobs in Redis for visibility
     removeOnComplete: { count: 100 },
-    removeOnFail: { count: 200 },
+    removeOnFail:     { count: 200 },
   },
 });
 
-/**
- * QueueEvents lets us listen to job lifecycle events from outside the worker.
- * Used by the API server to react to job completion without running the worker itself.
- */
 export const pipelineQueueEvents = new QueueEvents('pipelines', {
   connection: redisConnection,
 });

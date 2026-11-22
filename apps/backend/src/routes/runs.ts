@@ -94,9 +94,22 @@ export default function createRunsRouter(wss: WebSocketServer): Router {
 
       const steps = getDefaultSteps();
       const job = await pipelineQueue.add('pipeline', {
-        runId:   newRun.id,
-        repoUrl: original.repoUrl,
+        runId:        newRun.id,
+        repoUrl:      original.repoUrl,
         steps,
+        // Level 3+
+        githubToken:  null,
+        repoOwner:    null,
+        repoSlug:     original.repoName,
+        commitSha:    null,
+        // Level 5
+        dockerImage:   original.dockerImage ?? 'node:20-alpine',
+        artifactPaths: [],
+        matrixLabel:   null,
+        secrets:       {},
+        notifyUrl:     null,
+        repoName:      original.repoName,
+        branch:        original.branch,
       });
 
       console.log(`[Retry] Queued job ${job.id} for run ${newRun.id}`);

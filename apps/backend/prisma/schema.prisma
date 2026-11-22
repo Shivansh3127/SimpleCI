@@ -19,25 +19,60 @@ model User {
   accessToken String                // OAuth token — used to call GitHub API (commit status)
   createdAt   DateTime     @default(now())
 
-  repos Repository[]
+  repos       Repository[]
+  memberships RepoMember[]
 
   @@map("users")
 }
 
 // ── A GitHub repo registered by a user for CI ─────────────────
-// Each repo gets its own unique webhook secret — no more single .env secret.
 model Repository {
-  id            String   @id @default(uuid())
-  userId        String
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  repoName      String              // e.g. "SimpleCI"
-  repoUrl       String   @unique    // e.g. "https://github.com/Shivansh3127/SimpleCI.git"
-  webhookSecret String              // unique HMAC secret for this repo's webhook
-  createdAt     DateTime @default(now())
+  id              String       @id @default(uuid())
+  userId          String
+  user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  repoName        String               // e.g. "SimpleCI"
+  repoUrl         String       @unique // e.g. "https://github.com/Shivansh3127/SimpleCI.git"
+  webhookSecret   String               // unique HMAC secret for this repo's webhook
+  // Level 5.6: Slack-compatible webhook URL for notifications
+  notifyUrl       String?              // e.g. "https://hooks.slack.com/services/..."
+  createdAt       DateTime     @default(now())
 
-  runs Run[]
+  runs    Run[]
+  secrets Secret[]
+  members RepoMember[]
 
   @@map("repositories")
+}
+
+// ── Level 5.4: Per-repo encrypted secrets ─────────────────────
+// Values are encrypted with AES-256-GCM before storage.
+// Injected as env vars into every Docker container at run time.
+model Secret {
+  id           String     @id @default(uuid())
+  repositoryId String
+  repository   Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  name         String     // env var name, e.g. "NPM_TOKEN"
+  encryptedVal String     // AES-256-GCM ciphertext (base64)
+  iv           String     // 12-byte IV (base64)
+  tag          String     // 16-byte auth tag (base64)
+  createdAt    DateTime   @default(now())
+
+  @@unique([repositoryId, name])  // no duplicate secret names per repo
+  @@map("secrets")
+}
+
+// ── Level 5.5: RBAC — per-repo role for each user ─────────────
+model RepoMember {
+  id           String     @id @default(uuid())
+  repositoryId String
+  repository   Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role         String     @default("viewer")  // "admin" | "viewer"
+  createdAt    DateTime   @default(now())
+
+  @@unique([repositoryId, userId])
+  @@map("repo_members")
 }
 
 // ── A pipeline "run" — created every time GitHub fires a webhook ──
@@ -52,6 +87,12 @@ model Run {
   commitMsg    String
   status       String      @default("QUEUED") // QUEUED | RUNNING | SUCCESS | FAILED | CANCELLED
   containerId  String?                        // Docker container ID for cancellation
+  // Level 5.1: which Docker image was used
+  dockerImage  String?
+  // Level 5.3: matrix label e.g. "node=20" — null for non-matrix runs
+  matrixLabel  String?
+  // Level 5.2: MinIO artifact keys (JSON array of strings)
+  artifactKeys String?
   startedAt    DateTime    @default(now())
   finishedAt   DateTime?
 

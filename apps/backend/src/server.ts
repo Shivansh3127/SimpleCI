@@ -14,6 +14,9 @@ import { createWebhookRouter } from './routes/webhook.js';
 import createRunsRouter from './routes/runs.js';
 import authRouter from './routes/auth.js';
 import reposRouter from './routes/repos.js';
+import secretsRouter from './routes/secrets.js';
+import membersRouter from './routes/members.js';
+import artifactsRouter from './routes/artifacts.js';
 import prisma, { connectWithRetry } from './db/prisma.js';
 import { configurePassport } from './lib/auth.js';
 import { redisConnection } from './queue/redisConnection.js';
@@ -76,6 +79,10 @@ app.use('/auth',    authRouter);
 app.use('/webhook', createWebhookRouter(wss));
 app.use('/runs',    createRunsRouter(wss));
 app.use('/repos',   reposRouter);
+// Level 5: nested resource routes
+app.use('/repos/:repoId/secrets', secretsRouter);
+app.use('/repos/:repoId/members', membersRouter);
+app.use('/runs/:runId/artifacts', artifactsRouter);
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '4.0.0' });
@@ -121,6 +128,7 @@ connectWithRetry()
       logger.info(`   Runs API: http://localhost:${PORT}/runs`);
       logger.info(`   Repos:    http://localhost:${PORT}/repos`);
       logger.info(`   Start the worker separately: npm run dev:worker`);
+      logger.info(`   MinIO:    http://localhost:9001`);
     });
   })
   .catch((err) => {

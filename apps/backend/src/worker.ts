@@ -42,7 +42,8 @@ const CONCURRENCY = Number(process.env.PIPELINE_CONCURRENCY ?? 3);
 const worker = new Worker<PipelineJobData>(
   'pipelines',
   async (job: Job<PipelineJobData>) => {
-    const { runId, repoUrl, steps, githubToken, repoOwner, repoSlug, commitSha } = job.data;
+    const { runId, repoUrl, steps, githubToken, repoOwner, repoSlug, commitSha,
+            dockerImage, artifactPaths, matrixLabel, secrets, notifyUrl, repoName, branch } = job.data;
     const log = logger.child({ jobId: job.id, runId });
 
     log.info({ repoUrl }, 'Starting pipeline job');
@@ -52,7 +53,12 @@ const worker = new Worker<PipelineJobData>(
     activeContainersGauge.inc();
 
     try {
-      await runPipeline(runId, repoUrl, steps, wss, githubToken, repoOwner, repoSlug, commitSha);
+      await runPipeline(
+        runId, repoUrl, steps, wss,
+        githubToken, repoOwner, repoSlug, commitSha,
+        // Level 5 params
+        dockerImage, artifactPaths, matrixLabel, secrets, notifyUrl, repoName, branch,
+      );
 
       const durationMs = Date.now() - startMs;
       pipelineDurationHistogram.observe({ status: 'success', repo: repoUrl }, durationMs);
