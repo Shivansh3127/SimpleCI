@@ -110,6 +110,7 @@ export default function createRunsRouter(wss: WebSocketServer): Router {
         notifyUrl:     null,
         repoName:      original.repoName,
         branch:        original.branch,
+        deployConfig:  null,
       });
 
       console.log(`[Retry] Queued job ${job.id} for run ${newRun.id}`);

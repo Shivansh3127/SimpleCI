@@ -4,13 +4,16 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import tar from 'tar';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import prisma from '../db/prisma.js';
-import { PipelineStep } from './pipelineParser.js';
+import { PipelineStep, type DeployConfig } from './pipelineParser.js';
 import { childLogger } from '../lib/logger.js';
 import { uploadArtifact } from './artifactService.js';
 import { sendNotification } from './notifyService.js';
 import { runPipelineProcess } from './processRunner.js';
 
+const execAsync = promisify(exec);
 const docker = new Docker();
 
 const BUILD_CACHE_VOLUME = 'simpleci-build-cache';
@@ -84,13 +87,14 @@ export async function runPipeline(
   notifyUrl?:    string | null,
   repoName?:     string,
   branch?:       string,
+  deployConfig?: DeployConfig | null,
 ): Promise<void> {
   // On Render (or any env without Docker), use the process-based runner
   if (process.env.RUNNER_MODE === 'process') {
     return runPipelineProcess(
       runId, repoUrl, steps, wss, githubToken, repoOwner, repoSlug,
       commitSha, dockerImage, artifactPaths, matrixLabel, secrets,
-      notifyUrl, repoName, branch,
+      notifyUrl, repoName, branch, deployConfig,
     );
   }
   const log       = childLogger({ runId, repo: repoUrl });
@@ -287,6 +291,62 @@ export async function runPipeline(
     if (exitCode === 0) {
       await emitLog('\n[SimpleCI] ✅ Pipeline PASSED');
       finalStatus = 'SUCCESS';
+
+      // ── CD: GitHub Pages auto-deploy (Docker mode) ───────────────
+      if (deployConfig && deployConfig.provider === 'github-pages' && githubToken && repoOwner && repoSlug) {
+        try {
+          await emitLog('\n[SimpleCI] 🚀 Deploying to GitHub Pages...');
+          const deployBranch = deployConfig.branch || 'gh-pages';
+          const deployDir    = deployConfig.directory || '.';
+
+          // Clone the repo to get the deploy files (container is already removed above)
+          const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), 'simpleci-deploy-clone-'));
+          await execAsync(`git clone --depth 1 ${repoUrl} ${cloneDir}`, { timeout: 60_000 });
+
+          const deploySourceDir = deployDir === '.' ? cloneDir : path.join(cloneDir, deployDir);
+
+          if (!fs.existsSync(deploySourceDir)) {
+            await emitLog(`[SimpleCI] ⚠️  Deploy directory "${deployDir}" not found — skipping deploy`);
+          } else {
+            const deployWorkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'simpleci-deploy-'));
+
+            // Copy deploy files
+            await execAsync(`cp -r "${deploySourceDir}/." "${deployWorkDir}/"`, { timeout: 30_000 });
+
+            // Remove .git if copied
+            const copiedGit = path.join(deployWorkDir, '.git');
+            if (fs.existsSync(copiedGit)) fs.rmSync(copiedGit, { recursive: true, force: true });
+
+            // Remove .simpleci.yaml from deploy
+            const copiedYaml = path.join(deployWorkDir, '.simpleci.yaml');
+            if (fs.existsSync(copiedYaml)) fs.unlinkSync(copiedYaml);
+
+            const authUrl = `https://x-access-token:${githubToken}@github.com/${repoOwner}/${repoSlug}.git`;
+            const gitCmds = [
+              `git init`,
+              `git checkout -b ${deployBranch}`,
+              `git config user.email "simpleci@deploy.bot"`,
+              `git config user.name "SimpleCI Deploy Bot"`,
+              `git add -A`,
+              `git commit -m "deploy: SimpleCI auto-deploy [run ${runId}]"`,
+              `git push --force "${authUrl}" ${deployBranch}`,
+            ].join(' && ');
+
+            await execAsync(gitCmds, { cwd: deployWorkDir, timeout: 60_000 });
+            await emitLog(`[SimpleCI] ✅ Deployed to GitHub Pages (${deployBranch} branch)`);
+            await emitLog(`[SimpleCI] 🌐 Site: https://${repoOwner}.github.io/${repoSlug}/`);
+
+            try { fs.rmSync(deployWorkDir, { recursive: true, force: true }); } catch {}
+          }
+
+          try { fs.rmSync(cloneDir, { recursive: true, force: true }); } catch {}
+        } catch (deployErr) {
+          const deployMsg = deployErr instanceof Error ? deployErr.message : String(deployErr);
+          await emitLog(`[SimpleCI] ⚠️  Deploy failed: ${deployMsg}`);
+          await emitLog('[SimpleCI] ℹ️  CI passed but deploy failed — marking as SUCCESS (deploy is best-effort)');
+        }
+      }
+
       await prisma.run.update({
         where: { id: runId },
         data:  {

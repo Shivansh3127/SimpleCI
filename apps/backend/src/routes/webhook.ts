@@ -11,7 +11,9 @@ import {
   isBranchAllowed,
   getDockerImage,
   getArtifactPaths,
+  getDeployConfig,
   expandMatrix,
+  type DeployConfig,
 } from '../services/pipelineParser.js';
 import { pipelineQueue } from '../queue/pipelineQueue.js';
 import prisma from '../db/prisma.js';
@@ -85,6 +87,7 @@ export function createWebhookRouter(wss: WebSocketServer): Router {
     let dockerImage   = 'node:20-alpine';
     let artifactPaths: string[] = [];
     let matrixEntries: Array<Record<string, string>> | null = null;
+    let deployConfig: DeployConfig | null = null;
     let tempDir: string | null = null;
 
     try {
@@ -104,6 +107,7 @@ export function createWebhookRouter(wss: WebSocketServer): Router {
       dockerImage   = getDockerImage(config);
       artifactPaths = getArtifactPaths(config);
       matrixEntries = expandMatrix(config);         // Level 5.3
+      deployConfig  = getDeployConfig(config);       // CD: deploy config
     } catch (err) {
       console.warn('[Webhook] ⚠️  Could not clone repo for config — using defaults:', err);
     } finally {
@@ -183,6 +187,7 @@ export function createWebhookRouter(wss: WebSocketServer): Router {
         notifyUrl,
         repoName,
         branch,
+        deployConfig,
       });
 
       createdRuns.push({ runId: run.id, jobId: job.id!, matrixLabel });

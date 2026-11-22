@@ -1,5 +1,6 @@
 import { Queue, QueueEvents } from 'bullmq';
 import { redisConnection } from './redisConnection.js';
+import type { DeployConfig } from '../services/pipelineParser.js';
 
 /**
  * The shape of data stored in each BullMQ job.
@@ -27,6 +28,8 @@ export interface PipelineJobData {
   // For notifications
   repoName:     string;
   branch:       string;
+  // CD: deploy config (github-pages auto-deploy)
+  deployConfig: DeployConfig | null;
 }
 
 export const pipelineQueue = new Queue<PipelineJobData>('pipelines', {

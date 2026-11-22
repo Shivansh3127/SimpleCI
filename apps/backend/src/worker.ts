@@ -43,7 +43,8 @@ const worker = new Worker<PipelineJobData>(
   'pipelines',
   async (job: Job<PipelineJobData>) => {
     const { runId, repoUrl, steps, githubToken, repoOwner, repoSlug, commitSha,
-            dockerImage, artifactPaths, matrixLabel, secrets, notifyUrl, repoName, branch } = job.data;
+            dockerImage, artifactPaths, matrixLabel, secrets, notifyUrl, repoName, branch,
+            deployConfig } = job.data;
     const log = logger.child({ jobId: job.id, runId });
 
     log.info({ repoUrl }, 'Starting pipeline job');
@@ -58,6 +59,7 @@ const worker = new Worker<PipelineJobData>(
         githubToken, repoOwner, repoSlug, commitSha,
         // Level 5 params
         dockerImage, artifactPaths, matrixLabel, secrets, notifyUrl, repoName, branch,
+        deployConfig,
       );
 
       const durationMs = Date.now() - startMs;

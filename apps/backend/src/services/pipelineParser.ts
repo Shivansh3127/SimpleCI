@@ -14,6 +14,13 @@ export interface MatrixConfig {
   // e.g. { node: [18, 20, 22] }  or  { python: ['3.10', '3.12'] }
 }
 
+// Deploy configuration — CD (Continuous Deployment)
+export interface DeployConfig {
+  provider:   'github-pages';          // currently only github-pages supported
+  directory?: string;                  // folder to deploy (default: '.' = repo root)
+  branch?:    string;                  // target branch (default: 'gh-pages')
+}
+
 // Shape of the full .simpleci.yaml file
 export interface PipelineConfig {
   pipeline: {
@@ -27,6 +34,8 @@ export interface PipelineConfig {
     matrix?:   MatrixConfig;
     // Level 5.2: artifact paths to upload after success
     artifacts?: string[];
+    // CD: deploy config — auto-deploy after CI passes
+    deploy?:   DeployConfig;
     steps:     PipelineStep[];
   };
 }
@@ -101,4 +110,19 @@ export function getDefaultSteps(): PipelineStep[] {
     { name: 'Run Tests',            run: 'npm test'    },
     { name: 'Build',                run: 'npm run build' },
   ];
+}
+
+/** Returns the deploy config if present, null otherwise. */
+export function getDeployConfig(config: PipelineConfig | null): DeployConfig | null {
+  const deploy = config?.pipeline?.deploy;
+  if (!deploy || !deploy.provider) return null;
+  if (deploy.provider !== 'github-pages') {
+    console.warn(`[Parser] Unknown deploy provider: ${deploy.provider} — skipping deploy`);
+    return null;
+  }
+  return {
+    provider:  'github-pages',
+    directory: deploy.directory ?? '.',
+    branch:    deploy.branch   ?? 'gh-pages',
+  };
 }

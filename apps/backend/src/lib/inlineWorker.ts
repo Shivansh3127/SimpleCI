@@ -29,6 +29,7 @@ export function startInlineWorker(wss: WebSocketServer): void {
       const {
         runId, repoUrl, steps, githubToken, repoOwner, repoSlug, commitSha,
         dockerImage, artifactPaths, matrixLabel, secrets, notifyUrl, repoName, branch,
+        deployConfig,
       } = job.data;
 
       const log = logger.child({ jobId: job.id, runId });
@@ -43,7 +44,7 @@ export function startInlineWorker(wss: WebSocketServer): void {
           runId, repoUrl, steps, wss,
           githubToken, repoOwner, repoSlug, commitSha,
           dockerImage, artifactPaths, matrixLabel, secrets,
-          notifyUrl, repoName, branch,
+          notifyUrl, repoName, branch, deployConfig,
         );
         pipelineTotalCounter.inc({ status: 'success' });
       } catch (err) {
