@@ -82,6 +82,16 @@ export function createWebhookRouter(wss: WebSocketServer): Router {
 
     console.log(`[Webhook] ✅ Push from ${repoName}@${branch} (${commitSha})`);
 
+    // ── Block deploy branches — prevents infinite loop ─────────────
+    // When SimpleCI pushes to gh-pages, GitHub fires ANOTHER webhook.
+    // We must ignore it or the pipeline will run → deploy → webhook → forever.
+    const DEPLOY_BRANCHES = ['gh-pages', 'gh-pages-deploy'];
+    if (DEPLOY_BRANCHES.includes(branch) || branch.startsWith('simpleci-deploy')) {
+      console.log(`[Webhook] ⏭️  Branch "${branch}" is a deploy branch — ignoring to prevent infinite loop`);
+      res.status(200).json({ message: `Deploy branch "${branch}" ignored` });
+      return;
+    }
+
     // ── Read .simpleci.yaml ───────────────────────────────────────
     let configSteps   = getDefaultSteps();
     let dockerImage   = 'node:20-alpine';
