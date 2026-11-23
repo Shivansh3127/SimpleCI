@@ -18,11 +18,31 @@ export default function createRunsRouter(wss: WebSocketServer): Router {
 
   /**
    * GET /runs
-   * Returns all pipeline runs, newest first.
+   * Returns pipeline runs for the currently logged-in user only, newest first.
+   * Runs are scoped to the user via their registered repositories.
    */
-  router.get('/', async (_req: Request, res: Response) => {
+  router.get('/', async (req: Request, res: Response) => {
     try {
+      const userId = (req.user as any)?.id ?? null;
+
+      // Build the where clause:
+      // - If logged in: only runs whose repository belongs to this user
+      // - If not logged in (no session): return empty list
+      if (!userId) {
+        return res.json([]);
+      }
+
+      // Get this user's registered repo IDs
+      const userRepos = await prisma.repository.findMany({
+        where: { userId },
+        select: { id: true },
+      });
+      const repoIds = userRepos.map((r) => r.id);
+
       const runs = await prisma.run.findMany({
+        where: {
+          repositoryId: { in: repoIds },
+        },
         orderBy: { startedAt: 'desc' },
         select: {
           id: true,
