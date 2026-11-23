@@ -45,7 +45,34 @@ export default function Login() {
             Sign in with GitHub
           </a>
 
-          <p style={{ marginTop: 24, fontSize: 12, color: 'var(--text-muted)' }}>
+          {/* Switch account link */}
+          <div style={{ marginTop: 16 }}>
+            <a
+              href={`${API}/auth/github/switch`}
+              style={{
+                display:        'inline-block',
+                fontSize:       13,
+                color:          'var(--text-muted)',
+                textDecoration: 'none',
+                padding:        '8px 16px',
+                borderRadius:   6,
+                border:         '1px solid var(--border)',
+                transition:     'color 0.15s, border-color 0.15s',
+              }}
+              onMouseOver={(e) => {
+                e.currentTarget.style.color = 'var(--text)';
+                e.currentTarget.style.borderColor = 'var(--text-muted)';
+              }}
+              onMouseOut={(e) => {
+                e.currentTarget.style.color = 'var(--text-muted)';
+                e.currentTarget.style.borderColor = 'var(--border)';
+              }}
+            >
+              🔄 Use a different GitHub account
+            </a>
+          </div>
+
+          <p style={{ marginTop: 20, fontSize: 12, color: 'var(--text-muted)' }}>
             SimpleCI uses GitHub OAuth — no passwords stored.
           </p>
         </div>
