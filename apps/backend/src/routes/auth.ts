@@ -56,9 +56,26 @@ router.get('/github/switch', (req: Request, res: Response) => {
 router.get(
   '/github/callback',
   passport.authenticate('github', { failureRedirect: `${FRONTEND_URL}/login?error=auth_failed` }),
-  (_req: Request, res: Response) => {
-    // Success — redirect to the dashboard
-    res.redirect(`${FRONTEND_URL}/`);
+  (req: Request, res: Response) => {
+    // Regenerate the session after successful login to prevent session fixation.
+    // This ensures a new session ID is issued, discarding any stale data from a
+    // previously logged-in user (e.g. a different GitHub account that was signed
+    // in earlier in the same browser).
+    const user = req.user;
+    req.session.regenerate((err) => {
+      if (err) {
+        console.error('[Auth] Session regeneration failed:', err);
+        return res.redirect(`${FRONTEND_URL}/login?error=session_error`);
+      }
+      // Re-attach the user to the new session so passport stays authenticated
+      req.login(user as Express.User, (loginErr) => {
+        if (loginErr) {
+          console.error('[Auth] Re-login after session regenerate failed:', loginErr);
+          return res.redirect(`${FRONTEND_URL}/login?error=session_error`);
+        }
+        res.redirect(`${FRONTEND_URL}/`);
+      });
+    });
   }
 );
 

@@ -29,6 +29,13 @@ export default function Dashboard() {
   const fetchRuns = useCallback(async () => {
     try {
       const res = await fetch(`${API}/runs`, { credentials: 'include' });
+      // 401 = not authenticated (e.g. after switching accounts — old session gone)
+      // Let useAuth handle the redirect; just clear runs and stop loading.
+      if (res.status === 401) {
+        setRuns([]);
+        setLoading(false);
+        return;
+      }
       if (!res.ok) throw new Error(`Server returned ${res.status}`);
       const data: Run[] = await res.json();
       setRuns(data);

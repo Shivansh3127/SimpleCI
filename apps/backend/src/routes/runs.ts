@@ -4,6 +4,7 @@ import { getDefaultSteps } from '../services/pipelineParser.js';
 import { pipelineQueue } from '../queue/pipelineQueue.js';
 import { WebSocketServer } from 'ws';
 import Docker from 'dockerode';
+import { requireAuth } from '../middleware/requireAuth.js';
 
 const docker = new Docker();
 
@@ -15,6 +16,10 @@ const docker = new Docker();
  */
 export default function createRunsRouter(wss: WebSocketServer): Router {
   const router = Router();
+
+  // All runs routes require authentication — prevents stale sessions from
+  // leaking another user's run data when switching GitHub accounts.
+  router.use(requireAuth);
 
   /**
    * GET /runs
